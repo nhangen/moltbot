@@ -8,9 +8,19 @@ export const SessionLabelString = Type.String({
   maxLength: SESSION_LABEL_MAX_LENGTH,
 });
 
-export const GatewayClientIdSchema = Type.Union(
-  Object.values(GATEWAY_CLIENT_IDS).map((value) => Type.Literal(value)),
-);
+// Legacy client IDs for backward compatibility (pre-moltbot rename)
+const LEGACY_CLIENT_IDS = [
+  "clawdbot-control-ui",
+  "clawdbot-macos",
+  "clawdbot-ios",
+  "clawdbot-android",
+  "clawdbot-probe",
+] as const;
+
+export const GatewayClientIdSchema = Type.Union([
+  ...Object.values(GATEWAY_CLIENT_IDS).map((value) => Type.Literal(value)),
+  ...LEGACY_CLIENT_IDS.map((value) => Type.Literal(value)),
+]);
 
 export const GatewayClientModeSchema = Type.Union(
   Object.values(GATEWAY_CLIENT_MODES).map((value) => Type.Literal(value)),
