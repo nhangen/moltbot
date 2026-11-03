@@ -156,3 +156,42 @@ export function assertProcessSandboxed(commandLine: string, platform = process.p
     }
   }
 }
+
+/**
+ * Queries macOS Seatbelt sandbox state for an active process PID using system libsandbox.1.dylib.
+ * Returns true if the process is sandboxed (sandbox_check returns 1), false if unsandboxed (0).
+ * Throws explicitly if the PID is invalid, dead/disappearing, or if the platform query fails.
+ */
+export function queryDarwinProcessSeatbeltState(pid: number): boolean {
+  if (process.platform !== "darwin") {
+    throw new Error(
+      `queryDarwinProcessSeatbeltState is only supported on macOS (darwin), got ${process.platform}`,
+    );
+  }
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`Invalid PID for Seatbelt state query: ${pid}`);
+  }
+
+  // Fails explicitly if the process does not exist or has disappeared
+  process.kill(pid, 0);
+
+  const pyScript =
+    "import ctypes, sys\n" +
+    "try:\n" +
+    '    lib = ctypes.CDLL("/usr/lib/libsandbox.1.dylib")\n' +
+    `    res = lib.sandbox_check(${pid}, None, 0)\n` +
+    "    sys.stdout.write(str(res))\n" +
+    "except Exception as e:\n" +
+    "    sys.stderr.write(str(e))\n" +
+    "    sys.exit(2)\n";
+
+  const output = execFileSync("python3", ["-c", pyScript], {
+    encoding: "utf8",
+    timeout: 3000,
+    stdio: ["pipe", "pipe", "pipe"],
+  }).trim();
+
+  if (output === "1") return true;
+  if (output === "0") return false;
+  throw new Error(`Unexpected output from Seatbelt sandbox_check for PID ${pid}: "${output}"`);
+}

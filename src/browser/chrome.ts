@@ -53,6 +53,7 @@ export {
   parseChromiumVersion,
   validateBrowserExecutableSecurity,
   assertProcessSandboxed,
+  queryDarwinProcessSeatbeltState,
 } from "./chrome.security.js";
 
 function exists(filePath: string) {

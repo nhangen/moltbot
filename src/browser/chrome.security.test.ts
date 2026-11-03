@@ -14,6 +14,7 @@ import {
   compareChromiumVersions,
   isChromiumVersionAtLeast,
   parseChromiumVersion,
+  queryDarwinProcessSeatbeltState,
   validateBrowserExecutableSecurity,
 } from "./chrome.security.js";
 import type { ResolvedBrowserConfig } from "./config.js";
@@ -368,6 +369,21 @@ describe("Chromium security baseline and version verification", () => {
       );
     });
 
+    it.runIf(process.platform === "darwin")(
+      "queryDarwinProcessSeatbeltState verifies Seatbelt sandbox_check directly",
+      () => {
+        // Harness process self is not sandboxed (verifies checking self is NOT browser proof)
+        expect(queryDarwinProcessSeatbeltState(process.pid)).toBe(false);
+
+        // Rejects invalid PIDs
+        expect(() => queryDarwinProcessSeatbeltState(0)).toThrowError(/Invalid PID/);
+        expect(() => queryDarwinProcessSeatbeltState(-123)).toThrowError(/Invalid PID/);
+
+        // Fails explicitly on non-existent / disappearing target without accepting false-positive
+        expect(() => queryDarwinProcessSeatbeltState(9999999)).toThrow();
+      },
+    );
+
     const localChromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
     const hasLocalChrome = fs.existsSync(localChromePath);
 
@@ -397,6 +413,14 @@ describe("Chromium security baseline and version verification", () => {
           const renderers = allProcesses.filter((p) => p.type === "renderer");
           expect(renderers.length).toBeGreaterThan(0);
 
+          if (process.platform === "darwin") {
+            const browserProc = allProcesses.find((p) => p.type === "browser");
+            if (browserProc) {
+              // The broker/parent process is unsandboxed; checking broker/harness is NOT renderer proof
+              expect(queryDarwinProcessSeatbeltState(browserProc.id)).toBe(false);
+            }
+          }
+
           // Assertions outside process-read catches: inspect each real OS process command line
           for (const renderer of renderers) {
             const cmd = execFileSync("ps", ["-p", String(renderer.id), "-o", "command="], {
@@ -406,6 +430,11 @@ describe("Chromium security baseline and version verification", () => {
             expect(cmd).toContain("--seatbelt-client=");
             expect(cmd).not.toContain("--no-sandbox");
             expect(() => assertProcessSandboxed(cmd, "darwin")).not.toThrow();
+
+            // Direct Seatbelt libsandbox sandbox_check proof for actual owned launched renderer PID
+            if (process.platform === "darwin") {
+              expect(queryDarwinProcessSeatbeltState(renderer.id)).toBe(true);
+            }
           }
         } finally {
           await browser.close();
@@ -443,6 +472,11 @@ describe("Chromium security baseline and version verification", () => {
             // In the mutant, --no-sandbox is present and --seatbelt-client= is absent
             expect(mutantCmd).toContain("--no-sandbox");
             expect(mutantCmd).not.toContain("--seatbelt-client=");
+
+            // Direct Seatbelt libsandbox sandbox_check proof: mutant renderer is NOT sandboxed
+            if (process.platform === "darwin") {
+              expect(queryDarwinProcessSeatbeltState(mutantRenderer.id)).toBe(false);
+            }
 
             // Causal proof that our sandbox baseline assertion fails on this mutant
             expect(() => assertProcessSandboxed(mutantCmd, "darwin")).toThrowError(
