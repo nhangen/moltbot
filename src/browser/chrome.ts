@@ -52,6 +52,7 @@ export {
   isChromiumVersionAtLeast,
   parseChromiumVersion,
   validateBrowserExecutableSecurity,
+  assertProcessSandboxed,
 } from "./chrome.security.js";
 
 function exists(filePath: string) {

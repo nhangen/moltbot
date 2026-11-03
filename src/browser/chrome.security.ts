@@ -136,3 +136,23 @@ export function validateBrowserExecutableSecurity(
   }
   return { valid: true, version };
 }
+
+/**
+ * Asserts that a Chromium process command line conforms to OS sandboxing invariants.
+ * Throws if the process command line contains forbidden flags (e.g. `--no-sandbox`)
+ * or lacks required OS-level sandbox confinement mechanisms (e.g. macOS Seatbelt client for renderers).
+ */
+export function assertProcessSandboxed(commandLine: string, platform = process.platform): void {
+  if (commandLine.includes("--no-sandbox")) {
+    throw new Error(
+      `Process violates security baseline: forbidden flag "--no-sandbox" detected in command line: ${commandLine}`,
+    );
+  }
+  if (platform === "darwin" && commandLine.includes("--type=renderer")) {
+    if (!commandLine.includes("--seatbelt-client=")) {
+      throw new Error(
+        `Process violates macOS security baseline: renderer process lacks "--seatbelt-client=" OS sandbox confinement: ${commandLine}`,
+      );
+    }
+  }
+}

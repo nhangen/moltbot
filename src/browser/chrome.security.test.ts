@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { chromium } from "playwright-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveBrowserExecutableForPlatform } from "./chrome.executables.js";
@@ -8,6 +10,7 @@ import {
   MIN_CHROMIUM_SECURITY_VERSION,
   PINNED_CFT_VERSION,
   assertBrowserSecurityBaseline,
+  assertProcessSandboxed,
   compareChromiumVersions,
   isChromiumVersionAtLeast,
   parseChromiumVersion,
@@ -29,6 +32,10 @@ describe("Chromium security baseline and version verification", () => {
     });
 
     it("correctly compares version components", () => {
+      // Future major versions (> 156) must be permitted
+      expect(compareChromiumVersions("200.0.0.0", MIN_CHROMIUM_SECURITY_VERSION)).toBe(1);
+      expect(compareChromiumVersions("157.0.0.0", MIN_CHROMIUM_SECURITY_VERSION)).toBe(1);
+      expect(compareChromiumVersions("156.1.0.0", MIN_CHROMIUM_SECURITY_VERSION)).toBe(1);
       // Pinned official patched candidate vs baseline
       expect(compareChromiumVersions("156.0.8078.80", MIN_CHROMIUM_SECURITY_VERSION)).toBe(1);
       // Fixed platform release (.74) vs baseline (.73)
@@ -45,34 +52,44 @@ describe("Chromium security baseline and version verification", () => {
       expect(compareChromiumVersions("130.0.6723.69", MIN_CHROMIUM_SECURITY_VERSION)).toBe(-1);
     });
 
-    it("isChromiumVersionAtLeast matches expected security boundary", () => {
+    it("isChromiumVersionAtLeast matches expected security boundary and permits newer major versions", () => {
+      // Future major versions must succeed without hardcoded major 156 lock-in
+      expect(isChromiumVersionAtLeast("200.0.0.0")).toBe(true);
+      expect(isChromiumVersionAtLeast("160.0.8100.1")).toBe(true);
+      expect(isChromiumVersionAtLeast("157.0.0.0")).toBe(true);
+      expect(isChromiumVersionAtLeast("156.1.0.0")).toBe(true);
+      // Supported patched candidates
       expect(isChromiumVersionAtLeast("156.0.8078.80")).toBe(true);
       expect(isChromiumVersionAtLeast("156.0.8078.74")).toBe(true);
       expect(isChromiumVersionAtLeast("156.0.8078.73")).toBe(true);
+      // Insecure releases below baseline
+      expect(isChromiumVersionAtLeast("156.0.8078.72")).toBe(false);
       expect(isChromiumVersionAtLeast("156.0.8078.4")).toBe(false);
       expect(isChromiumVersionAtLeast("145.0.7632.6")).toBe(false);
       expect(isChromiumVersionAtLeast("130.0.0.0")).toBe(false);
     });
 
     it("assertBrowserSecurityBaseline succeeds for secure versions and throws with CVE details for insecure versions", () => {
+      // Future and patched versions succeed
+      expect(() => assertBrowserSecurityBaseline("200.0.0.0")).not.toThrow();
+      expect(() => assertBrowserSecurityBaseline("157.0.0.0")).not.toThrow();
       expect(() => assertBrowserSecurityBaseline("156.0.8078.80")).not.toThrow();
       expect(() => assertBrowserSecurityBaseline("156.0.8078.73")).not.toThrow();
 
+      // Refusal on version below baseline throws outside any process-read catch
       expect(() =>
         assertBrowserSecurityBaseline("156.0.8078.4", "Playwright test runner"),
       ).toThrowError(
         /Refusing browser \(version 156\.0\.8078\.4\) for Playwright test runner: version is below minimum security baseline 156\.0\.8078\.73/,
       );
 
-      try {
-        assertBrowserSecurityBaseline("145.0.7632.6", "bundled fallback");
-      } catch (err: unknown) {
-        const msg = String(err);
-        for (const cve of CHROMIUM_SECURITY_CVES) {
-          expect(msg).toContain(cve);
-        }
-        expect(msg).toContain(CHROMIUM_SECURITY_ADVISORY);
-      }
+      // Verify exact error message includes CVE IDs and official advisory link
+      expect(() => assertBrowserSecurityBaseline("145.0.7632.6", "bundled fallback")).toThrowError(
+        new RegExp(CHROMIUM_SECURITY_CVES[0]),
+      );
+      expect(() => assertBrowserSecurityBaseline("145.0.7632.6", "bundled fallback")).toThrowError(
+        new RegExp(CHROMIUM_SECURITY_ADVISORY.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      );
     });
   });
 
@@ -329,5 +346,114 @@ describe("Chromium security baseline and version verification", () => {
         expect(resSecure.version).toBe("156.0.8078.80");
       }
     });
+
+    it("assertProcessSandboxed verifies command lines and rejects forbidden --no-sandbox", () => {
+      // Sandboxed renderer on darwin with seatbelt
+      const sandboxedDarwinCmd =
+        "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --seatbelt-client=23 --headless=new";
+      expect(() => assertProcessSandboxed(sandboxedDarwinCmd, "darwin")).not.toThrow();
+
+      // Mutant renderer with --no-sandbox
+      const mutantNoSandboxCmd =
+        "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --no-sandbox --headless=new";
+      expect(() => assertProcessSandboxed(mutantNoSandboxCmd, "darwin")).toThrowError(
+        /forbidden flag "--no-sandbox" detected/,
+      );
+
+      // Mutant renderer lacking seatbelt on darwin
+      const mutantNoSeatbeltCmd =
+        "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --headless=new";
+      expect(() => assertProcessSandboxed(mutantNoSeatbeltCmd, "darwin")).toThrowError(
+        /renderer process lacks "--seatbelt-client=" OS sandbox confinement/,
+      );
+    });
+
+    const localChromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    const hasLocalChrome = fs.existsSync(localChromePath);
+
+    it.runIf(hasLocalChrome)(
+      "verifies causal real OS sandbox confinement and proves forbidden --no-sandbox mutant fails",
+      async () => {
+        // 1. Positive verification: sandboxed execution
+        const browser = await chromium.launch({
+          executablePath: localChromePath,
+          args: ["--headless=new"],
+          chromiumSandbox: true,
+        });
+
+        try {
+          const page = await browser.newPage();
+          await page.goto("about:blank");
+
+          const session = await browser.newBrowserCDPSession();
+          const info = (await session.send("SystemInfo.getProcessInfo")) as {
+            processInfo: Array<{ id: number; type: string }>;
+          };
+
+          // Observed process counts must be non-vacuous
+          const allProcesses = info.processInfo;
+          expect(allProcesses.length).toBeGreaterThanOrEqual(2);
+
+          const renderers = allProcesses.filter((p) => p.type === "renderer");
+          expect(renderers.length).toBeGreaterThan(0);
+
+          // Assertions outside process-read catches: inspect each real OS process command line
+          for (const renderer of renderers) {
+            const cmd = execFileSync("ps", ["-p", String(renderer.id), "-o", "command="], {
+              encoding: "utf8",
+            });
+            // OS confinement proof: macOS Seatbelt sandbox is active and --no-sandbox is absent
+            expect(cmd).toContain("--seatbelt-client=");
+            expect(cmd).not.toContain("--no-sandbox");
+            expect(() => assertProcessSandboxed(cmd, "darwin")).not.toThrow();
+          }
+        } finally {
+          await browser.close();
+        }
+
+        // 2. Negative mutant verification: launch with forbidden --no-sandbox / chromiumSandbox: false
+        const mutantBrowser = await chromium.launch({
+          executablePath: localChromePath,
+          args: ["--headless=new", "--no-sandbox"],
+          chromiumSandbox: false,
+        });
+
+        try {
+          const mutantPage = await mutantBrowser.newPage();
+          await mutantPage.goto("about:blank");
+
+          const mutantSession = await mutantBrowser.newBrowserCDPSession();
+          const mutantInfo = (await mutantSession.send("SystemInfo.getProcessInfo")) as {
+            processInfo: Array<{ id: number; type: string }>;
+          };
+
+          // Non-vacuous check on mutant renderers
+          const mutantRenderers = mutantInfo.processInfo.filter((p) => p.type === "renderer");
+          expect(mutantRenderers.length).toBeGreaterThan(0);
+
+          // Assert each mutant renderer is unconfined and violates sandbox invariants
+          for (const mutantRenderer of mutantRenderers) {
+            const mutantCmd = execFileSync(
+              "ps",
+              ["-p", String(mutantRenderer.id), "-o", "command="],
+              {
+                encoding: "utf8",
+              },
+            );
+            // In the mutant, --no-sandbox is present and --seatbelt-client= is absent
+            expect(mutantCmd).toContain("--no-sandbox");
+            expect(mutantCmd).not.toContain("--seatbelt-client=");
+
+            // Causal proof that our sandbox baseline assertion fails on this mutant
+            expect(() => assertProcessSandboxed(mutantCmd, "darwin")).toThrowError(
+              /forbidden flag "--no-sandbox" detected/,
+            );
+          }
+        } finally {
+          await mutantBrowser.close();
+        }
+      },
+      20_000,
+    );
   });
 });
