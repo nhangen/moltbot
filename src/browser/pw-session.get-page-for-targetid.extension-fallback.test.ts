@@ -39,6 +39,7 @@ describe("pw-session getPageForTargetId", () => {
 
     vi.doMock("./chrome.js", () => ({
       getChromeWebSocketUrl: vi.fn(async () => null),
+      fetchChromeVersion: vi.fn(async () => null),
     }));
 
     const mod = await import("./pw-session.js");

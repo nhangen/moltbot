@@ -2,26 +2,65 @@ FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Pinned official Google Chrome for Testing (Stable 156.0.8078.80 / rev 1706539)
+# Advisory: https://chromereleases.googleblog.com/2026/10/stable-channel-update-for-desktop_0562499947.html
+# Remediates CVE-2026-118306, CVE-2026-118331, CVE-2026-118348, CVE-2026-118344
+ARG CFT_VERSION=156.0.8078.80
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
-    chromium \
     curl \
     fonts-liberation \
     fonts-noto-color-emoji \
     git \
     jq \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcups2 \
+    libdrm2 \
+    libgbm1 \
+    libglu1-mesa \
+    libnss3 \
+    libpango-1.0-0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libxshmfence1 \
     novnc \
     python3 \
     socat \
+    unzip \
     websockify \
     x11vnc \
     xvfb \
   && rm -rf /var/lib/apt/lists/*
 
+# Install official pinned Chrome for Testing
+RUN set -eux; \
+    ARCH="$(dpkg --print-architecture)"; \
+    case "${ARCH}" in \
+      amd64) CFT_PLATFORM="linux64" ;; \
+      arm64) CFT_PLATFORM="linux-arm64" ;; \
+      *) echo "Unsupported architecture for CfT: ${ARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${CFT_VERSION}/${CFT_PLATFORM}/chrome-${CFT_PLATFORM}.zip" -o /tmp/chrome.zip; \
+    unzip -q /tmp/chrome.zip -d /opt; \
+    rm /tmp/chrome.zip; \
+    ln -s "/opt/chrome-${CFT_PLATFORM}/chrome" /usr/local/bin/chromium; \
+    ln -s "/opt/chrome-${CFT_PLATFORM}/chrome" /usr/local/bin/google-chrome; \
+    chmod -R 755 "/opt/chrome-${CFT_PLATFORM}"
+
+# Run as non-root user to preserve sandboxing within the container
+RUN useradd -m -u 1000 -s /bin/bash moltbot
+
 COPY scripts/sandbox-browser-entrypoint.sh /usr/local/bin/moltbot-sandbox-browser
 RUN chmod +x /usr/local/bin/moltbot-sandbox-browser
+
+USER moltbot
+ENV HOME=/home/moltbot
 
 EXPOSE 9222 5900 6080
 

@@ -9,7 +9,8 @@ import type {
 import { chromium } from "playwright-core";
 import { formatErrorMessage } from "../infra/errors.js";
 import { getHeadersWithAuth } from "./cdp.helpers.js";
-import { getChromeWebSocketUrl } from "./chrome.js";
+import { fetchChromeVersion, getChromeWebSocketUrl } from "./chrome.js";
+import { assertBrowserSecurityBaseline, parseChromiumVersion } from "./chrome.security.js";
 
 export type BrowserConsoleMessage = {
   type: string;
@@ -292,6 +293,15 @@ async function connectBrowser(cdpUrl: string): Promise<ConnectedBrowser> {
         const wsUrl = await getChromeWebSocketUrl(normalized, timeout).catch(() => null);
         const endpoint = wsUrl ?? normalized;
         const headers = getHeadersWithAuth(endpoint);
+
+        const cdpVersion = await fetchChromeVersion(normalized, timeout).catch(() => null);
+        if (cdpVersion?.Browser) {
+          const parsed = parseChromiumVersion(cdpVersion.Browser);
+          if (parsed) {
+            assertBrowserSecurityBaseline(parsed.join("."), `CDP endpoint at ${normalized}`);
+          }
+        }
+
         const browser = await chromium.connectOverCDP(endpoint, { timeout, headers });
         const connected: ConnectedBrowser = { browser, cdpUrl: normalized };
         cached = connected;

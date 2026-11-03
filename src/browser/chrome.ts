@@ -14,6 +14,11 @@ import {
   resolveBrowserExecutableForPlatform,
 } from "./chrome.executables.js";
 import {
+  MIN_CHROMIUM_SECURITY_VERSION,
+  assertBrowserSecurityBaseline,
+  parseChromiumVersion,
+} from "./chrome.security.js";
+import {
   decorateClawdProfile,
   ensureProfileCleanExit,
   isProfileDecorated,
@@ -35,6 +40,19 @@ export {
   ensureProfileCleanExit,
   isProfileDecorated,
 } from "./chrome.profile-decoration.js";
+export {
+  MIN_CHROMIUM_SECURITY_VERSION,
+  PINNED_CFT_VERSION,
+  PINNED_CFT_REVISION,
+  CHROMIUM_SECURITY_CVES,
+  CHROMIUM_SECURITY_ADVISORY,
+  assertBrowserSecurityBaseline,
+  compareChromiumVersions,
+  getBrowserExecutableVersion,
+  isChromiumVersionAtLeast,
+  parseChromiumVersion,
+  validateBrowserExecutableSecurity,
+} from "./chrome.security.js";
 
 function exists(filePath: string) {
   try {
@@ -70,13 +88,16 @@ export async function isChromeReachable(cdpUrl: string, timeoutMs = 500): Promis
   return Boolean(version);
 }
 
-type ChromeVersion = {
+export type ChromeVersion = {
   webSocketDebuggerUrl?: string;
   Browser?: string;
   "User-Agent"?: string;
 };
 
-async function fetchChromeVersion(cdpUrl: string, timeoutMs = 500): Promise<ChromeVersion | null> {
+export async function fetchChromeVersion(
+  cdpUrl: string,
+  timeoutMs = 500,
+): Promise<ChromeVersion | null> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -162,8 +183,11 @@ export async function launchClawdChrome(
   const exe = resolveBrowserExecutable(resolved);
   if (!exe) {
     throw new Error(
-      "No supported browser found (Chrome/Brave/Edge/Chromium on macOS, Linux, or Windows).",
+      `No supported secure browser found meeting security baseline ${MIN_CHROMIUM_SECURITY_VERSION} (Chrome/Brave/Edge/Chromium on macOS, Linux, or Windows).`,
     );
+  }
+  if (exe.version) {
+    assertBrowserSecurityBaseline(exe.version, `selected ${exe.kind} browser (${exe.path})`);
   }
 
   const userDataDir = resolveClawdUserDataDir(profile.name);
@@ -279,6 +303,27 @@ export async function launchClawdChrome(
     throw new Error(
       `Failed to start Chrome CDP on port ${profile.cdpPort} for profile "${profile.name}".`,
     );
+  }
+
+  const cdpVersion = await fetchChromeVersion(profile.cdpUrl, 1000);
+  if (cdpVersion?.Browser) {
+    const parsedRunning = parseChromiumVersion(cdpVersion.Browser);
+    if (parsedRunning) {
+      const runningVerStr = parsedRunning.join(".");
+      try {
+        assertBrowserSecurityBaseline(
+          runningVerStr,
+          `running Chrome instance for profile "${profile.name}"`,
+        );
+      } catch (err) {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+        throw err;
+      }
+    }
   }
 
   const pid = proc.pid ?? -1;

@@ -4,10 +4,17 @@ import os from "node:os";
 import path from "node:path";
 
 import type { ResolvedBrowserConfig } from "./config.js";
+import {
+  MIN_CHROMIUM_SECURITY_VERSION,
+  assertBrowserSecurityBaseline,
+  getBrowserExecutableVersion,
+  isChromiumVersionAtLeast,
+} from "./chrome.security.js";
 
 export type BrowserExecutable = {
   kind: "brave" | "canary" | "chromium" | "chrome" | "custom" | "edge";
   path: string;
+  version?: string;
 };
 
 const CHROMIUM_BUNDLE_IDS = new Set([
@@ -357,15 +364,44 @@ function extractWindowsExecutablePath(command: string): string | null {
   return null;
 }
 
-function findFirstExecutable(candidates: Array<BrowserExecutable>): BrowserExecutable | null {
+export type FindExecutableOptions = {
+  minVersion?: string;
+  versionResolver?: (path: string) => string | null;
+  enforceSecurity?: boolean;
+};
+
+function findFirstExecutable(
+  candidates: Array<BrowserExecutable>,
+  options?: FindExecutableOptions,
+): BrowserExecutable | null {
+  const minVersion = options?.minVersion ?? MIN_CHROMIUM_SECURITY_VERSION;
+  const resolver = options?.versionResolver ?? getBrowserExecutableVersion;
+  const enforce = options?.enforceSecurity ?? true;
+
   for (const candidate of candidates) {
-    if (exists(candidate.path)) return candidate;
+    if (!exists(candidate.path)) continue;
+    if (candidate.version) {
+      if (enforce && !isChromiumVersionAtLeast(candidate.version, minVersion)) {
+        continue;
+      }
+      return candidate;
+    }
+    const version = resolver(candidate.path);
+    if (version) {
+      if (enforce && !isChromiumVersionAtLeast(version, minVersion)) {
+        continue;
+      }
+      return { ...candidate, version };
+    }
+    if (!enforce) {
+      return candidate;
+    }
   }
 
   return null;
 }
 
-export function findChromeExecutableMac(): BrowserExecutable | null {
+export function findChromeExecutableMac(options?: FindExecutableOptions): BrowserExecutable | null {
   const candidates: Array<BrowserExecutable> = [
     {
       kind: "chrome",
@@ -415,10 +451,17 @@ export function findChromeExecutableMac(): BrowserExecutable | null {
     },
   ];
 
-  return findFirstExecutable(candidates);
+  const opts: FindExecutableOptions = {
+    ...options,
+    enforceSecurity:
+      options?.enforceSecurity ?? (options?.versionResolver ? true : process.platform === "darwin"),
+  };
+  return findFirstExecutable(candidates, opts);
 }
 
-export function findChromeExecutableLinux(): BrowserExecutable | null {
+export function findChromeExecutableLinux(
+  options?: FindExecutableOptions,
+): BrowserExecutable | null {
   const candidates: Array<BrowserExecutable> = [
     { kind: "chrome", path: "/usr/bin/google-chrome" },
     { kind: "chrome", path: "/usr/bin/google-chrome-stable" },
@@ -434,10 +477,17 @@ export function findChromeExecutableLinux(): BrowserExecutable | null {
     { kind: "chromium", path: "/snap/bin/chromium" },
   ];
 
-  return findFirstExecutable(candidates);
+  const opts: FindExecutableOptions = {
+    ...options,
+    enforceSecurity:
+      options?.enforceSecurity ?? (options?.versionResolver ? true : process.platform === "linux"),
+  };
+  return findFirstExecutable(candidates, opts);
 }
 
-export function findChromeExecutableWindows(): BrowserExecutable | null {
+export function findChromeExecutableWindows(
+  options?: FindExecutableOptions,
+): BrowserExecutable | null {
   const localAppData = process.env.LOCALAPPDATA ?? "";
   const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
   // Must use bracket notation: variable name contains parentheses
@@ -505,25 +555,59 @@ export function findChromeExecutableWindows(): BrowserExecutable | null {
     path: joinWin(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
   });
 
-  return findFirstExecutable(candidates);
+  const opts: FindExecutableOptions = {
+    ...options,
+    enforceSecurity:
+      options?.enforceSecurity ?? (options?.versionResolver ? true : process.platform === "win32"),
+  };
+  return findFirstExecutable(candidates, opts);
 }
 
 export function resolveBrowserExecutableForPlatform(
   resolved: ResolvedBrowserConfig,
-  platform: NodeJS.Platform,
+  platform: NodeJS.Platform = process.platform,
+  options?: FindExecutableOptions,
 ): BrowserExecutable | null {
+  const minVersion = options?.minVersion ?? MIN_CHROMIUM_SECURITY_VERSION;
+  const resolver = options?.versionResolver ?? getBrowserExecutableVersion;
+  const isHost = platform === process.platform;
+
   if (resolved.executablePath) {
     if (!exists(resolved.executablePath)) {
       throw new Error(`browser.executablePath not found: ${resolved.executablePath}`);
+    }
+    const version = resolver(resolved.executablePath);
+    if (version) {
+      assertBrowserSecurityBaseline(
+        version,
+        `executable at ${resolved.executablePath}`,
+        minVersion,
+      );
+      return { kind: "custom", path: resolved.executablePath, version };
+    }
+    if (isHost && options?.enforceSecurity !== false) {
+      throw new Error(
+        `Unable to verify version of browser executable at "${resolved.executablePath}". Version proof is required for security baseline ${minVersion}.`,
+      );
     }
     return { kind: "custom", path: resolved.executablePath };
   }
 
   const detected = detectDefaultChromiumExecutable(platform);
-  if (detected) return detected;
+  if (detected) {
+    const version = resolver(detected.path);
+    if (version) {
+      if (isChromiumVersionAtLeast(version, minVersion)) {
+        return { ...detected, version };
+      }
+      // Detected default browser is below baseline, fail closed for default
+    } else if (!isHost || options?.enforceSecurity === false) {
+      return detected;
+    }
+  }
 
-  if (platform === "darwin") return findChromeExecutableMac();
-  if (platform === "linux") return findChromeExecutableLinux();
-  if (platform === "win32") return findChromeExecutableWindows();
+  if (platform === "darwin") return findChromeExecutableMac(options);
+  if (platform === "linux") return findChromeExecutableLinux(options);
+  if (platform === "win32") return findChromeExecutableWindows(options);
   return null;
 }
