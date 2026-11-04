@@ -65,7 +65,14 @@ describe("browser server-context remote profile tab operations", () => {
       closePageByTargetIdViaPlaywright,
     }));
 
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/json/version")) {
+        return new Response(JSON.stringify({ Browser: "Chrome/156.0.8078.80" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       throw new Error("unexpected fetch");
     });
     // @ts-expect-error test override
@@ -130,7 +137,14 @@ describe("browser server-context remote profile tab operations", () => {
       }),
     }));
 
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/json/version")) {
+        return new Response(JSON.stringify({ Browser: "Chrome/156.0.8078.80" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       throw new Error("unexpected fetch");
     });
     // @ts-expect-error test override
@@ -159,7 +173,14 @@ describe("browser server-context remote profile tab operations", () => {
       focusPageByTargetIdViaPlaywright,
     }));
 
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/json/version")) {
+        return new Response(JSON.stringify({ Browser: "Chrome/156.0.8078.80" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       throw new Error("unexpected fetch");
     });
     // @ts-expect-error test override
@@ -187,7 +208,14 @@ describe("browser server-context remote profile tab operations", () => {
       }),
     }));
 
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/json/version")) {
+        return new Response(JSON.stringify({ Browser: "Chrome/156.0.8078.80" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       throw new Error("unexpected fetch");
     });
     // @ts-expect-error test override

@@ -1,33 +1,58 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { chromium } from "playwright-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { resolveBrowserExecutableForPlatform } from "./chrome.executables.js";
+import {
+  clearExecutableVersionCache,
+  getCachedBrowserExecutableVersion,
+  resolveBrowserExecutableForPlatform,
+} from "./chrome.executables.js";
 import {
   CHROMIUM_SECURITY_ADVISORY,
   CHROMIUM_SECURITY_CVES,
+  CHROMIUM_SECURITY_CNA_RECORDS,
   MIN_CHROMIUM_SECURITY_VERSION,
   PINNED_CFT_VERSION,
   assertBrowserSecurityBaseline,
+  assertCdpEndpointSecurity,
   assertProcessSandboxed,
+  clearCdpSecurityCache,
   compareChromiumVersions,
   isChromiumVersionAtLeast,
   parseChromiumVersion,
   queryDarwinProcessSeatbeltState,
   validateBrowserExecutableSecurity,
 } from "./chrome.security.js";
-import type { ResolvedBrowserConfig } from "./config.js";
+import type { ResolvedBrowserConfig, ResolvedBrowserProfile } from "./config.js";
+import { launchClawdChrome, stopClawdChrome } from "./chrome.js";
+import { createTargetViaCdp } from "./cdp.js";
 
 describe("Chromium security baseline and version verification", () => {
   describe("version parsing and comparison", () => {
     it("parses valid Chromium versions from various banner formats", () => {
       expect(parseChromiumVersion("Google Chrome 156.0.8078.80")).toEqual([156, 0, 8078, 80]);
       expect(parseChromiumVersion("Chromium 156.0.8078.73")).toEqual([156, 0, 8078, 73]);
-      expect(parseChromiumVersion("Brave Browser 156.0.8078.74")).toEqual([156, 0, 8078, 74]);
       expect(parseChromiumVersion("Chrome/156.0.8078.80")).toEqual([156, 0, 8078, 80]);
+      expect(parseChromiumVersion("HeadlessChrome/156.0.8078.80")).toEqual([156, 0, 8078, 80]);
       expect(parseChromiumVersion("156.0.8078.4")).toEqual([156, 0, 8078, 4]);
       expect(parseChromiumVersion("145.0.7632.6")).toEqual([145, 0, 7632, 6]);
+
+      // Real Brave CLI `--version` formats: "Brave Browser 1.75.175 Chromium: 133.0.6943.53"
+      expect(parseChromiumVersion("Brave Browser 1.75.175 Chromium: 133.0.6943.53")).toEqual([
+        133, 0, 6943, 53,
+      ]);
+      expect(parseChromiumVersion("Brave Browser 1.80.1 Chromium: 156.0.8078.80")).toEqual([
+        156, 0, 8078, 80,
+      ]);
+
+      // Real Microsoft Edge formats
+      expect(parseChromiumVersion("Microsoft Edge 133.0.3065.92")).toEqual([133, 0, 3065, 92]);
+      expect(parseChromiumVersion("Microsoft Edge 156.0.3065.92")).toEqual([156, 0, 3065, 92]);
+      expect(parseChromiumVersion("Edg/156.0.3065.92")).toEqual([156, 0, 3065, 92]);
+
       expect(parseChromiumVersion("invalid-version")).toBeNull();
       expect(parseChromiumVersion("")).toBeNull();
     });
@@ -91,6 +116,9 @@ describe("Chromium security baseline and version verification", () => {
       expect(() => assertBrowserSecurityBaseline("145.0.7632.6", "bundled fallback")).toThrowError(
         new RegExp(CHROMIUM_SECURITY_ADVISORY.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       );
+      for (const cna of CHROMIUM_SECURITY_CNA_RECORDS) {
+        expect(CHROMIUM_SECURITY_CVES).toContain(`CVE-2026-${cna}`);
+      }
     });
   });
 
@@ -285,7 +313,19 @@ describe("Chromium security baseline and version verification", () => {
   });
 
   describe("sandboxing and security invariant verification", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+      clearCdpSecurityCache();
+    });
+
     it("refuses CDP connection when /json/version reports vulnerable browser", async () => {
+      clearCdpSecurityCache();
+      vi.spyOn(chromium, "connectOverCDP").mockRejectedValue(
+        new Error("Sentinel: connectOverCDP must not be called when gate fails"),
+      );
+
       vi.stubGlobal(
         "fetch",
         vi.fn().mockImplementation((url: string) => {
@@ -302,17 +342,139 @@ describe("Chromium security baseline and version verification", () => {
         }),
       );
 
+      await expect(assertCdpEndpointSecurity("http://127.0.0.1:9222")).rejects.toThrowError(
+        /below minimum security baseline 156\.0\.8078\.73/,
+      );
+
       const { getPageForTargetId } = await import("./pw-session.js");
       await expect(getPageForTargetId({ cdpUrl: "http://127.0.0.1:9222" })).rejects.toThrowError(
         /below minimum security baseline 156\.0\.8078\.73/,
       );
     });
 
-    it("accepts CDP connection when /json/version reports patched browser", () => {
-      const cdpVersion = { Browser: "Chrome/156.0.8078.80" };
-      const parsed = parseChromiumVersion(cdpVersion.Browser);
-      expect(parsed).toEqual([156, 0, 8078, 80]);
-      expect(() => assertBrowserSecurityBaseline(parsed!.join("."), "CDP endpoint")).not.toThrow();
+    it("refuses CDP connection when /json/version fails or returns missing version", async () => {
+      clearCdpSecurityCache();
+      vi.spyOn(chromium, "connectOverCDP").mockRejectedValue(
+        new Error("Sentinel: connectOverCDP must not be called when gate fails"),
+      );
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation(() => Promise.reject(new Error("Network error"))),
+      );
+
+      await expect(assertCdpEndpointSecurity("http://127.0.0.1:9222")).rejects.toThrowError(
+        /failed to obtain \/json\/version proof/,
+      );
+    });
+
+    it("accepts CDP connection and connects when /json/version reports patched browser", async () => {
+      clearCdpSecurityCache();
+      const mockPage = { url: () => "about:blank" };
+      const mockContext = { pages: () => [mockPage] };
+      const mockBrowser = {
+        on: vi.fn(),
+        contexts: vi.fn(() => [mockContext]),
+        close: vi.fn(),
+        targets: vi.fn(() => []),
+      };
+      const connectSpy = vi.spyOn(chromium, "connectOverCDP").mockResolvedValue(mockBrowser as any);
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((url: string) => {
+          if (String(url).includes("/json/version")) {
+            return Promise.resolve({
+              ok: true,
+              json: async () => ({
+                Browser: "Chrome/156.0.8078.80",
+                webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/1",
+              }),
+            });
+          }
+          if (String(url).includes("/json/list")) {
+            return Promise.resolve({
+              ok: true,
+              json: async () => [],
+            });
+          }
+          return Promise.resolve({ ok: false });
+        }),
+      );
+
+      const securityProof = await assertCdpEndpointSecurity("http://127.0.0.1:9222");
+      expect(securityProof.version).toBe("156.0.8078.80");
+
+      const { getPageForTargetId } = await import("./pw-session.js");
+      const page = await getPageForTargetId({ cdpUrl: "http://127.0.0.1:9222" });
+      expect(connectSpy).toHaveBeenCalled();
+      expect(page).toBe(mockPage);
+    });
+
+    it("accepts extension relay connection without vulnerable browser refusal", async () => {
+      clearCdpSecurityCache();
+      const mockPage = { url: () => "about:blank" };
+      const mockContext = { pages: () => [mockPage] };
+      const mockBrowser = {
+        on: vi.fn(),
+        contexts: vi.fn(() => [mockContext]),
+        close: vi.fn(),
+        targets: vi.fn(() => []),
+      };
+      const connectSpy = vi.spyOn(chromium, "connectOverCDP").mockResolvedValue(mockBrowser as any);
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((url: string) => {
+          if (String(url).includes("/json/version")) {
+            return Promise.resolve({
+              ok: true,
+              json: async () => ({
+                Browser: "Moltbot/extension-relay",
+                webSocketDebuggerUrl: "ws://127.0.0.1:9223/devtools/browser/1",
+              }),
+            });
+          }
+          if (String(url).includes("/json/list")) {
+            return Promise.resolve({
+              ok: true,
+              json: async () => [],
+            });
+          }
+          return Promise.resolve({ ok: false });
+        }),
+      );
+
+      const securityProof = await assertCdpEndpointSecurity("http://127.0.0.1:9223");
+      expect(securityProof.isRelay).toBe(true);
+
+      const { getPageForTargetId } = await import("./pw-session.js");
+      const page = await getPageForTargetId({ cdpUrl: "http://127.0.0.1:9223" });
+      expect(connectSpy).toHaveBeenCalled();
+      expect(page).toBe(mockPage);
+    });
+
+    it("createTargetViaCdp fails closed when endpoint reports vulnerable browser", async () => {
+      clearCdpSecurityCache();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((url: string) => {
+          if (String(url).includes("/json/version")) {
+            return Promise.resolve({
+              ok: true,
+              json: async () => ({
+                Browser: "Chrome/145.0.7632.6",
+                webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/1",
+              }),
+            });
+          }
+          return Promise.resolve({ ok: false });
+        }),
+      );
+
+      await expect(
+        createTargetViaCdp({ cdpUrl: "http://127.0.0.1:9222", url: "about:blank" }),
+      ).rejects.toThrowError(/below minimum security baseline 156\.0\.8078\.73/);
     });
 
     it("preserves sandboxing by defaulting noSandbox to false in browser config", async () => {
@@ -488,6 +650,186 @@ describe("Chromium security baseline and version verification", () => {
         }
       },
       20_000,
+    );
+
+    it("verifies constant drift across Dockerfile, entrypoint script, and UI config", () => {
+      const dockerfile = fs.readFileSync("Dockerfile.sandbox-browser", "utf8");
+      expect(dockerfile).toContain(`ARG CFT_VERSION=${PINNED_CFT_VERSION}`);
+      expect(dockerfile).toContain(MIN_CHROMIUM_SECURITY_VERSION);
+
+      const entrypoint = fs.readFileSync("scripts/sandbox-browser-entrypoint.sh", "utf8");
+      expect(entrypoint).toContain(
+        `MIN_CHROMIUM_SECURITY_VERSION="${MIN_CHROMIUM_SECURITY_VERSION}"`,
+      );
+
+      const uiConfig = fs.readFileSync("ui/vitest.config.ts", "utf8");
+      expect(uiConfig).toContain(
+        `const MIN_CHROMIUM_SECURITY_VERSION = "${MIN_CHROMIUM_SECURITY_VERSION}"`,
+      );
+    });
+
+    it("verifies bash entrypoint version gate with mock chromium binaries", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cft-bash-test-"));
+      try {
+        const fakeChromium = path.join(tmpDir, "chromium");
+
+        const checkScript = `
+          MIN_CHROMIUM_SECURITY_VERSION="${MIN_CHROMIUM_SECURITY_VERSION}"
+          CHROME_VERSION_RAW="$(chromium --version 2>/dev/null || true)"
+          CHROME_VER_NUM="$(echo "$CHROME_VERSION_RAW" | grep -oE "[0-9]+\\\\.[0-9]+\\\\.[0-9]+\\\\.[0-9]+" | head -n1 || true)"
+          if [[ -z "$CHROME_VER_NUM" ]]; then
+            echo "ERROR: Unable to detect Chromium version from '$CHROME_VERSION_RAW'. Refusing to start." >&2
+            exit 1
+          fi
+          IFS="." read -r v1 v2 v3 v4 <<< "$CHROME_VER_NUM"
+          IFS="." read -r m1 m2 m3 m4 <<< "$MIN_CHROMIUM_SECURITY_VERSION"
+          if (( v1 < m1 || (v1 == m1 && (v2 < m2 || (v2 == m2 && (v3 < m3 || (v3 == m3 && v4 < m4))))))); then
+            echo "ERROR: Sandbox Chromium version $CHROME_VER_NUM is below security baseline $MIN_CHROMIUM_SECURITY_VERSION." >&2
+            exit 1
+          fi
+          echo "OK"
+        `;
+
+        // 1. Insecure old binary
+        fs.writeFileSync(fakeChromium, '#!/bin/sh\necho "Chromium 145.0.7632.6"\n', {
+          mode: 0o755,
+        });
+        expect(() => {
+          execFileSync("bash", ["-c", checkScript], {
+            env: { ...process.env, PATH: `${tmpDir}:${process.env.PATH}` },
+            stdio: "pipe",
+          });
+        }).toThrow();
+
+        // 2. Unparseable garbage binary
+        fs.writeFileSync(fakeChromium, '#!/bin/sh\necho "Unparseable string"\n', { mode: 0o755 });
+        expect(() => {
+          execFileSync("bash", ["-c", checkScript], {
+            env: { ...process.env, PATH: `${tmpDir}:${process.env.PATH}` },
+            stdio: "pipe",
+          });
+        }).toThrow();
+
+        // 3. Patched binary
+        fs.writeFileSync(fakeChromium, `#!/bin/sh\necho "Google Chrome ${PINNED_CFT_VERSION}"\n`, {
+          mode: 0o755,
+        });
+        const out = execFileSync("bash", ["-c", checkScript], {
+          env: { ...process.env, PATH: `${tmpDir}:${process.env.PATH}` },
+          encoding: "utf8",
+          stdio: "pipe",
+        });
+        expect(out.trim()).toBe("OK");
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("getCachedBrowserExecutableVersion caches by mtime and size", () => {
+      clearExecutableVersionCache();
+      const tmpFile = path.join(os.tmpdir(), `cache-test-${Date.now()}.bin`);
+      fs.writeFileSync(tmpFile, "test-binary-content");
+
+      try {
+        const mockResolver = vi.fn(() => "156.0.8078.80");
+        const v1 = getCachedBrowserExecutableVersion(tmpFile, mockResolver);
+        expect(v1).toBe("156.0.8078.80");
+        expect(mockResolver).toHaveBeenCalledTimes(1);
+
+        // Second call should return cached value without calling resolver again
+        const v2 = getCachedBrowserExecutableVersion(tmpFile, mockResolver);
+        expect(v2).toBe("156.0.8078.80");
+        expect(mockResolver).toHaveBeenCalledTimes(1);
+      } finally {
+        fs.unlinkSync(tmpFile);
+      }
+    });
+
+    it("resolves browser executable on win32 with mock resolver", () => {
+      vi.spyOn(fs, "existsSync").mockReturnValue(true);
+      const mockResolver = vi.fn((p: string) => {
+        if (p.toLowerCase().includes("chrome.exe")) return "156.0.8078.80";
+        return null;
+      });
+
+      const config: ResolvedBrowserConfig = {
+        enabled: true,
+        evaluateEnabled: true,
+        controlPort: 0,
+        cdpProtocol: "http",
+        cdpHost: "127.0.0.1",
+        cdpIsLoopback: true,
+        remoteCdpTimeoutMs: 1000,
+        remoteCdpHandshakeTimeoutMs: 2000,
+        color: "#000",
+        executablePath: undefined,
+        headless: true,
+        noSandbox: false,
+        attachOnly: false,
+        defaultProfile: "clawd",
+        profiles: {},
+      };
+
+      const resolved = resolveBrowserExecutableForPlatform(config, "win32", {
+        versionResolver: mockResolver,
+      });
+
+      expect(resolved?.kind).toBe("chrome");
+      expect(resolved?.version).toBe("156.0.8078.80");
+    });
+
+    it.runIf(hasLocalChrome)(
+      "verifies production launchClawdChrome Seatbelt confinement on macOS",
+      async () => {
+        const port = 59795;
+        const profile: ResolvedBrowserProfile = {
+          name: `test-prod-confinement-${Date.now()}`,
+          cdpPort: port,
+          cdpUrl: `http://127.0.0.1:${port}`,
+          cdpHost: "127.0.0.1",
+          cdpIsLoopback: true,
+          color: "#FF4500",
+          driver: "clawd",
+        };
+        const config: ResolvedBrowserConfig = {
+          enabled: true,
+          evaluateEnabled: true,
+          controlPort: 0,
+          cdpProtocol: "http",
+          cdpHost: "127.0.0.1",
+          cdpIsLoopback: true,
+          remoteCdpTimeoutMs: 1000,
+          remoteCdpHandshakeTimeoutMs: 2000,
+          color: "#000",
+          executablePath: undefined,
+          headless: true,
+          noSandbox: false,
+          attachOnly: false,
+          defaultProfile: "clawd",
+          profiles: {},
+        };
+
+        const running = await launchClawdChrome(config, profile);
+        try {
+          const browser = await chromium.connectOverCDP(profile.cdpUrl);
+          try {
+            const session = await browser.newBrowserCDPSession();
+            const info = (await session.send("SystemInfo.getProcessInfo")) as {
+              processInfo: Array<{ id: number; type: string }>;
+            };
+            const renderers = info.processInfo.filter((p) => p.type === "renderer");
+            expect(renderers.length).toBeGreaterThan(0);
+            for (const renderer of renderers) {
+              expect(queryDarwinProcessSeatbeltState(renderer.id)).toBe(true);
+            }
+          } finally {
+            await browser.close();
+          }
+        } finally {
+          await stopClawdChrome(running);
+        }
+      },
+      30_000,
     );
   });
 });

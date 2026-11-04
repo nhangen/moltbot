@@ -8,6 +8,7 @@ import {
   resolveClawdUserDataDir,
   stopClawdChrome,
 } from "./chrome.js";
+import { assertCdpEndpointSecurity } from "./chrome.security.js";
 import type { ResolvedBrowserProfile } from "./config.js";
 import { resolveProfile } from "./config.js";
 import type {
@@ -307,7 +308,15 @@ function createProfileContext(
     }
 
     // Port is reachable - check if we own it
-    if (await isReachable()) return;
+    if (await isReachable()) {
+      if (!profileState.running) {
+        await assertCdpEndpointSecurity(
+          profile.cdpUrl,
+          `pre-existing browser for profile "${profile.name}"`,
+        );
+      }
+      return;
+    }
 
     // HTTP responds but WebSocket fails - port in use by something else
     if (!profileState.running) {

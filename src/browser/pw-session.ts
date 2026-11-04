@@ -9,8 +9,8 @@ import type {
 import { chromium } from "playwright-core";
 import { formatErrorMessage } from "../infra/errors.js";
 import { getHeadersWithAuth } from "./cdp.helpers.js";
-import { fetchChromeVersion, getChromeWebSocketUrl } from "./chrome.js";
-import { assertBrowserSecurityBaseline, parseChromiumVersion } from "./chrome.security.js";
+import { getChromeWebSocketUrl } from "./chrome.js";
+import { assertCdpEndpointSecurity } from "./chrome.security.js";
 
 export type BrowserConsoleMessage = {
   type: string;
@@ -294,13 +294,7 @@ async function connectBrowser(cdpUrl: string): Promise<ConnectedBrowser> {
         const endpoint = wsUrl ?? normalized;
         const headers = getHeadersWithAuth(endpoint);
 
-        const cdpVersion = await fetchChromeVersion(normalized, timeout).catch(() => null);
-        if (cdpVersion?.Browser) {
-          const parsed = parseChromiumVersion(cdpVersion.Browser);
-          if (parsed) {
-            assertBrowserSecurityBaseline(parsed.join("."), `CDP endpoint at ${normalized}`);
-          }
-        }
+        await assertCdpEndpointSecurity(normalized, `CDP endpoint at ${normalized}`, timeout);
 
         const browser = await chromium.connectOverCDP(endpoint, { timeout, headers });
         const connected: ConnectedBrowser = { browser, cdpUrl: normalized };
@@ -311,6 +305,13 @@ async function connectBrowser(cdpUrl: string): Promise<ConnectedBrowser> {
         });
         return connected;
       } catch (err) {
+        if (
+          err instanceof Error &&
+          (err.message.includes("security baseline") ||
+            err.message.includes("Refusing CDP connection"))
+        ) {
+          throw err;
+        }
         lastErr = err;
         const delay = 250 + attempt * 250;
         await new Promise((r) => setTimeout(r, delay));

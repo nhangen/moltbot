@@ -34,7 +34,11 @@ function resolveSecureBrowser(): { channel?: string; executablePath?: string; ve
     if (!fs.existsSync(customExe)) {
       throw new Error(`MOLTBOT_BROWSER_EXECUTABLE not found: ${customExe}`);
     }
-    const out = execFileSync(customExe, ["--version"], { encoding: "utf8" });
+    const out = execFileSync(customExe, ["--version"], {
+      encoding: "utf8",
+      timeout: 3000,
+      stdio: ["pipe", "pipe", "ignore"],
+    });
     const match = out.match(/(\d+\.\d+\.\d+\.\d+)/);
     const ver = match?.[1];
     if (!ver || !isVersionSecure(ver)) {
@@ -49,7 +53,11 @@ function resolveSecureBrowser(): { channel?: string; executablePath?: string; ve
   const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (process.platform === "darwin" && fs.existsSync(macChrome)) {
     try {
-      const out = execFileSync(macChrome, ["--version"], { encoding: "utf8" });
+      const out = execFileSync(macChrome, ["--version"], {
+        encoding: "utf8",
+        timeout: 3000,
+        stdio: ["pipe", "pipe", "ignore"],
+      });
       const match = out.match(/(\d+\.\d+\.\d+\.\d+)/);
       const ver = match?.[1];
       if (ver && isVersionSecure(ver)) {
@@ -64,7 +72,11 @@ function resolveSecureBrowser(): { channel?: string; executablePath?: string; ve
   const linuxChrome = "/usr/bin/google-chrome";
   if (process.platform === "linux" && fs.existsSync(linuxChrome)) {
     try {
-      const out = execFileSync(linuxChrome, ["--version"], { encoding: "utf8" });
+      const out = execFileSync(linuxChrome, ["--version"], {
+        encoding: "utf8",
+        timeout: 3000,
+        stdio: ["pipe", "pipe", "ignore"],
+      });
       const match = out.match(/(\d+\.\d+\.\d+\.\d+)/);
       const ver = match?.[1];
       if (ver && isVersionSecure(ver)) {
@@ -83,6 +95,9 @@ function resolveSecureBrowser(): { channel?: string; executablePath?: string; ve
 }
 
 const secureBrowser = resolveSecureBrowser();
+console.log(
+  `[UI vitest] Selected verified secure browser at "${secureBrowser.executablePath ?? secureBrowser.channel}" (version ${secureBrowser.version}) with chromiumSandbox=true`,
+);
 
 export default defineConfig({
   test: {

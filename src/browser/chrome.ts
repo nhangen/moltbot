@@ -45,8 +45,11 @@ export {
   PINNED_CFT_VERSION,
   PINNED_CFT_REVISION,
   CHROMIUM_SECURITY_CVES,
+  CHROMIUM_SECURITY_CNA_RECORDS,
   CHROMIUM_SECURITY_ADVISORY,
   assertBrowserSecurityBaseline,
+  assertCdpEndpointSecurity,
+  clearCdpSecurityCache,
   compareChromiumVersions,
   getBrowserExecutableVersion,
   isChromiumVersionAtLeast,
@@ -307,25 +310,43 @@ export async function launchClawdChrome(
     );
   }
 
-  const cdpVersion = await fetchChromeVersion(profile.cdpUrl, 1000);
-  if (cdpVersion?.Browser) {
-    const parsedRunning = parseChromiumVersion(cdpVersion.Browser);
-    if (parsedRunning) {
-      const runningVerStr = parsedRunning.join(".");
-      try {
-        assertBrowserSecurityBaseline(
-          runningVerStr,
-          `running Chrome instance for profile "${profile.name}"`,
-        );
-      } catch (err) {
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
-        throw err;
-      }
+  const cdpVersion = await fetchChromeVersion(profile.cdpUrl, 2000);
+  if (!cdpVersion?.Browser) {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // ignore
     }
+    throw new Error(
+      `Refusing running browser for profile "${profile.name}": failed to obtain /json/version proof over CDP from ${profile.cdpUrl}.`,
+    );
+  }
+
+  const parsedRunning = parseChromiumVersion(cdpVersion.Browser);
+  if (!parsedRunning) {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // ignore
+    }
+    throw new Error(
+      `Refusing running browser for profile "${profile.name}": unparseable version string "${cdpVersion.Browser}" from ${profile.cdpUrl}.`,
+    );
+  }
+
+  const runningVerStr = parsedRunning.join(".");
+  try {
+    assertBrowserSecurityBaseline(
+      runningVerStr,
+      `running Chrome instance for profile "${profile.name}"`,
+    );
+  } catch (err) {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // ignore
+    }
+    throw err;
   }
 
   const pid = proc.pid ?? -1;

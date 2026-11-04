@@ -13,19 +13,70 @@ export const CHROMIUM_SECURITY_CVES = [
   "CVE-2026-118344",
 ] as const;
 
+export const CHROMIUM_SECURITY_CNA_RECORDS = ["118306", "118331", "118348", "118344"] as const;
+
 export const CHROMIUM_SECURITY_ADVISORY =
   "https://chromereleases.googleblog.com/2026/10/stable-channel-update-for-desktop_0562499947.html";
 
 export function parseChromiumVersion(raw: string): [number, number, number, number] | null {
   if (!raw || typeof raw !== "string") return null;
-  const match = raw.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)/);
-  if (!match) return null;
-  return [
-    Number.parseInt(match[1], 10),
-    Number.parseInt(match[2], 10),
-    Number.parseInt(match[3], 10),
-    Number.parseInt(match[4], 10),
-  ];
+
+  // 1. Explicit "Chromium: X.Y.Z.W" (e.g. Brave CLI `--version` output: "Brave Browser 1.75.175 Chromium: 133.0.6943.53")
+  const chromiumMatch = raw.match(/Chromium[:\s/]+(\d+)\.(\d+)\.(\d+)\.(\d+)/i);
+  if (chromiumMatch) {
+    return [
+      Number.parseInt(chromiumMatch[1], 10),
+      Number.parseInt(chromiumMatch[2], 10),
+      Number.parseInt(chromiumMatch[3], 10),
+      Number.parseInt(chromiumMatch[4], 10),
+    ];
+  }
+
+  // 2. CDP Browser header format: "Chrome/156.0.8078.80", "HeadlessChrome/156.0.8078.80"
+  const cdpMatch = raw.match(/(?:Headless)?Chrome\/(\d+)\.(\d+)\.(\d+)\.(\d+)/i);
+  if (cdpMatch) {
+    return [
+      Number.parseInt(cdpMatch[1], 10),
+      Number.parseInt(cdpMatch[2], 10),
+      Number.parseInt(cdpMatch[3], 10),
+      Number.parseInt(cdpMatch[4], 10),
+    ];
+  }
+
+  // 3. Microsoft Edge CDP / CLI: "Edg/156.0.3065.92" or "Microsoft Edge 156.0.3065.92"
+  const edgeMatch = raw.match(/(?:Edg(?:e)?\/|Microsoft Edge\s+)(\d+)\.(\d+)\.(\d+)\.(\d+)/i);
+  if (edgeMatch) {
+    return [
+      Number.parseInt(edgeMatch[1], 10),
+      Number.parseInt(edgeMatch[2], 10),
+      Number.parseInt(edgeMatch[3], 10),
+      Number.parseInt(edgeMatch[4], 10),
+    ];
+  }
+
+  // 4. Google Chrome / Chromium banner: "Google Chrome 156.0.8078.80", "Chromium 156.0.8078.73"
+  const bannerMatch = raw.match(/(?:Google Chrome|Chromium)\s+(\d+)\.(\d+)\.(\d+)\.(\d+)/i);
+  if (bannerMatch) {
+    return [
+      Number.parseInt(bannerMatch[1], 10),
+      Number.parseInt(bannerMatch[2], 10),
+      Number.parseInt(bannerMatch[3], 10),
+      Number.parseInt(bannerMatch[4], 10),
+    ];
+  }
+
+  // 5. Clean 4-component version: "156.0.8078.80"
+  const cleanMatch = raw.match(/\b(\d+)\.(\d+)\.(\d+)\.(\d+)\b/);
+  if (cleanMatch) {
+    return [
+      Number.parseInt(cleanMatch[1], 10),
+      Number.parseInt(cleanMatch[2], 10),
+      Number.parseInt(cleanMatch[3], 10),
+      Number.parseInt(cleanMatch[4], 10),
+    ];
+  }
+
+  return null;
 }
 
 export function compareChromiumVersions(a: string, b: string): number {
@@ -109,6 +160,27 @@ export function getBrowserExecutableVersion(exePath: string, timeoutMs = 1500): 
     }
   }
 
+  // 3. On Windows (win32), read file version metadata
+  if (process.platform === "win32") {
+    try {
+      const escaped = exePath.replace(/'/g, "''");
+      const psCmd = `(Get-Item -LiteralPath '${escaped}').VersionInfo.FileVersion`;
+      const output = execFileSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", psCmd],
+        {
+          timeout: timeoutMs,
+          encoding: "utf8",
+          stdio: ["pipe", "pipe", "ignore"],
+        },
+      );
+      const parsed = parseChromiumVersion(String(output ?? ""));
+      if (parsed) return parsed.join(".");
+    } catch {
+      // ignore
+    }
+  }
+
   return null;
 }
 
@@ -175,6 +247,11 @@ export function queryDarwinProcessSeatbeltState(pid: number): boolean {
   // Fails explicitly if the process does not exist or has disappeared
   process.kill(pid, 0);
 
+  const pythonBin = "/usr/bin/python3";
+  if (!fs.existsSync(pythonBin)) {
+    throw new Error(`Trusted system python3 not found at ${pythonBin} for Seatbelt query`);
+  }
+
   const pyScript =
     "import ctypes, sys\n" +
     "try:\n" +
@@ -185,7 +262,7 @@ export function queryDarwinProcessSeatbeltState(pid: number): boolean {
     "    sys.stderr.write(str(e))\n" +
     "    sys.exit(2)\n";
 
-  const output = execFileSync("python3", ["-c", pyScript], {
+  const output = execFileSync(pythonBin, ["-c", pyScript], {
     encoding: "utf8",
     timeout: 3000,
     stdio: ["pipe", "pipe", "pipe"],
@@ -194,4 +271,64 @@ export function queryDarwinProcessSeatbeltState(pid: number): boolean {
   if (output === "1") return true;
   if (output === "0") return false;
   throw new Error(`Unexpected output from Seatbelt sandbox_check for PID ${pid}: "${output}"`);
+}
+
+const cdpSecurityCache = new Map<string, { version: string; checkedAt: number }>();
+
+export function clearCdpSecurityCache(): void {
+  cdpSecurityCache.clear();
+}
+
+/**
+ * Validates the security baseline of a CDP endpoint before connection.
+ * Fails closed if the endpoint cannot be contacted, returns missing/unparseable version,
+ * or if the reported version is below MIN_CHROMIUM_SECURITY_VERSION.
+ * Explicitly exempts the Moltbot extension relay (attaching to user's browser).
+ */
+export async function assertCdpEndpointSecurity(
+  cdpUrl: string,
+  context?: string,
+  timeoutMs = 2500,
+): Promise<{ version: string; isRelay: boolean }> {
+  const cached = cdpSecurityCache.get(cdpUrl);
+  if (cached && Date.now() - cached.checkedAt < 10_000) {
+    return { version: cached.version, isRelay: cached.version === "extension-relay" };
+  }
+
+  const normalized = cdpUrl.replace(/\/$/, "");
+  const endpoint = `${normalized}/json/version`;
+  let cdpVersion: { Browser?: string } | null = null;
+  try {
+    const res = await fetch(endpoint, { signal: AbortSignal.timeout(timeoutMs) });
+    if (res.ok) {
+      cdpVersion = (await res.json()) as { Browser?: string };
+    }
+  } catch {
+    cdpVersion = null;
+  }
+
+  if (!cdpVersion?.Browser) {
+    throw new Error(
+      `Refusing CDP connection for ${context ?? cdpUrl}: failed to obtain /json/version proof from ${endpoint}. Version proof is required for security baseline.`,
+    );
+  }
+
+  // Explicit, logged extension relay exemption
+  if (cdpVersion.Browser === "Moltbot/extension-relay") {
+    cdpSecurityCache.set(cdpUrl, { version: "extension-relay", checkedAt: Date.now() });
+    return { version: "extension-relay", isRelay: true };
+  }
+
+  const parsed = parseChromiumVersion(cdpVersion.Browser);
+  if (!parsed) {
+    throw new Error(
+      `Refusing CDP connection for ${context ?? cdpUrl}: unparseable Browser string "${cdpVersion.Browser}" from ${endpoint}.`,
+    );
+  }
+
+  const versionStr = parsed.join(".");
+  assertBrowserSecurityBaseline(versionStr, context ?? `CDP endpoint at ${cdpUrl}`);
+
+  cdpSecurityCache.set(cdpUrl, { version: versionStr, checkedAt: Date.now() });
+  return { version: versionStr, isRelay: false };
 }

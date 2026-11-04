@@ -39,8 +39,22 @@ describe("pw-session getPageForTargetId", () => {
 
     vi.doMock("./chrome.js", () => ({
       getChromeWebSocketUrl: vi.fn(async () => null),
-      fetchChromeVersion: vi.fn(async () => null),
+      fetchChromeVersion: vi.fn(async () => ({ Browser: "Moltbot/extension-relay" })),
     }));
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        if (urlStr.includes("/json/version")) {
+          return new Response(JSON.stringify({ Browser: "Moltbot/extension-relay" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("Not found", { status: 404 });
+      }),
+    );
 
     const mod = await import("./pw-session.js");
     const resolved = await mod.getPageForTargetId({
@@ -51,5 +65,6 @@ describe("pw-session getPageForTargetId", () => {
 
     await mod.closePlaywrightBrowserConnection();
     expect(browserClose).toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });

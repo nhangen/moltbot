@@ -2,7 +2,7 @@
 set -euo pipefail
 
 export DISPLAY=:1
-export HOME="${HOME:-/home/moltbot}"
+export HOME="${HOME:-/tmp/moltbot-home}"
 export XDG_CONFIG_HOME="${HOME}/.config"
 export XDG_CACHE_HOME="${HOME}/.cache"
 
@@ -14,7 +14,7 @@ HEADLESS="${CLAWDBOT_BROWSER_HEADLESS:-0}"
 
 mkdir -p "${HOME}" "${HOME}/.chrome" "${XDG_CONFIG_HOME}" "${XDG_CACHE_HOME}"
 
-# Enforce minimum security baseline (CVE-2026-118306 / advisory 156.0.8078.73+)
+# Enforce minimum security baseline: Chrome CNA records 118306/118331/118348/118344 (156.0.8078.73+)
 MIN_CHROMIUM_SECURITY_VERSION="156.0.8078.73"
 CHROME_VERSION_RAW="$(chromium --version 2>/dev/null || true)"
 echo "Sandbox browser binary version: ${CHROME_VERSION_RAW}"

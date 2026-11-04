@@ -368,24 +368,46 @@ export type FindExecutableOptions = {
   minVersion?: string;
   versionResolver?: (path: string) => string | null;
   enforceSecurity?: boolean;
+  allowInsecureTestOnly?: boolean;
 };
+
+const executableVersionCache = new Map<
+  string,
+  { mtimeMs: number; size: number; version: string | null }
+>();
+
+export function clearExecutableVersionCache(): void {
+  executableVersionCache.clear();
+}
+
+export function getCachedBrowserExecutableVersion(
+  exePath: string,
+  resolver: (path: string) => string | null = getBrowserExecutableVersion,
+): string | null {
+  try {
+    const st = fs.statSync(exePath);
+    const cached = executableVersionCache.get(exePath);
+    if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+      return cached.version;
+    }
+    const version = resolver(exePath);
+    executableVersionCache.set(exePath, { mtimeMs: st.mtimeMs, size: st.size, version });
+    return version;
+  } catch {
+    return resolver(exePath);
+  }
+}
 
 function findFirstExecutable(
   candidates: Array<BrowserExecutable>,
   options?: FindExecutableOptions,
 ): BrowserExecutable | null {
   const minVersion = options?.minVersion ?? MIN_CHROMIUM_SECURITY_VERSION;
-  const resolver = options?.versionResolver ?? getBrowserExecutableVersion;
+  const resolver = options?.versionResolver ?? getCachedBrowserExecutableVersion;
   const enforce = options?.enforceSecurity ?? true;
 
   for (const candidate of candidates) {
     if (!exists(candidate.path)) continue;
-    if (candidate.version) {
-      if (enforce && !isChromiumVersionAtLeast(candidate.version, minVersion)) {
-        continue;
-      }
-      return candidate;
-    }
     const version = resolver(candidate.path);
     if (version) {
       if (enforce && !isChromiumVersionAtLeast(version, minVersion)) {
@@ -393,7 +415,7 @@ function findFirstExecutable(
       }
       return { ...candidate, version };
     }
-    if (!enforce) {
+    if (!enforce || options?.allowInsecureTestOnly) {
       return candidate;
     }
   }
@@ -569,7 +591,7 @@ export function resolveBrowserExecutableForPlatform(
   options?: FindExecutableOptions,
 ): BrowserExecutable | null {
   const minVersion = options?.minVersion ?? MIN_CHROMIUM_SECURITY_VERSION;
-  const resolver = options?.versionResolver ?? getBrowserExecutableVersion;
+  const resolver = options?.versionResolver ?? getCachedBrowserExecutableVersion;
   const isHost = platform === process.platform;
 
   if (resolved.executablePath) {
@@ -585,12 +607,17 @@ export function resolveBrowserExecutableForPlatform(
       );
       return { kind: "custom", path: resolved.executablePath, version };
     }
-    if (isHost && options?.enforceSecurity !== false) {
+    if (isHost && !options?.allowInsecureTestOnly) {
       throw new Error(
         `Unable to verify version of browser executable at "${resolved.executablePath}". Version proof is required for security baseline ${minVersion}.`,
       );
     }
-    return { kind: "custom", path: resolved.executablePath };
+    if (options?.allowInsecureTestOnly) {
+      return { kind: "custom", path: resolved.executablePath };
+    }
+    throw new Error(
+      `Unable to verify version of browser executable at "${resolved.executablePath}". Version proof is required for security baseline ${minVersion}.`,
+    );
   }
 
   const detected = detectDefaultChromiumExecutable(platform);
@@ -601,13 +628,18 @@ export function resolveBrowserExecutableForPlatform(
         return { ...detected, version };
       }
       // Detected default browser is below baseline, fail closed for default
-    } else if (!isHost || options?.enforceSecurity === false) {
+    } else if (options?.allowInsecureTestOnly) {
       return detected;
     }
   }
 
-  if (platform === "darwin") return findChromeExecutableMac(options);
-  if (platform === "linux") return findChromeExecutableLinux(options);
-  if (platform === "win32") return findChromeExecutableWindows(options);
+  const opts: FindExecutableOptions = {
+    ...options,
+    enforceSecurity: options?.enforceSecurity ?? (isHost ? true : false),
+  };
+
+  if (platform === "darwin") return findChromeExecutableMac(opts);
+  if (platform === "linux") return findChromeExecutableLinux(opts);
+  if (platform === "win32") return findChromeExecutableWindows(opts);
   return null;
 }
