@@ -21,8 +21,23 @@ export const CHROMIUM_SECURITY_ADVISORY =
 export function parseChromiumVersion(raw: string): [number, number, number, number] | null {
   if (!raw || typeof raw !== "string") return null;
 
-  // 1. Explicit "Chromium: X.Y.Z.W" (e.g. Brave CLI `--version` output: "Brave Browser 1.75.175 Chromium: 133.0.6943.53")
-  const chromiumMatch = raw.match(/Chromium[:\s/]+(\d+)\.(\d+)\.(\d+)\.(\d+)/i);
+  const trimmed = raw.trim();
+
+  // 1. Whole-string 4-quad numeric version: "156.0.8078.80" (from Info.plist, FileVersion, or explicit numeric contracts)
+  const wholeMatch = trimmed.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (wholeMatch) {
+    return [
+      Number.parseInt(wholeMatch[1], 10),
+      Number.parseInt(wholeMatch[2], 10),
+      Number.parseInt(wholeMatch[3], 10),
+      Number.parseInt(wholeMatch[4], 10),
+    ];
+  }
+
+  // 2. Explicit Chromium component: "Chromium: X.Y.Z.W", "Chromium/X.Y.Z.W", "Chromium X.Y.Z.W"
+  // E.g. Brave CLI `--version` output: "Brave Browser 1.75.175 Chromium: 133.0.6943.53",
+  // or extension relay: "Moltbot/extension-relay (Chromium 156.0.8078.80)"
+  const chromiumMatch = trimmed.match(/\bChromium[:\s/]+(\d+)\.(\d+)\.(\d+)\.(\d+)\b/i);
   if (chromiumMatch) {
     return [
       Number.parseInt(chromiumMatch[1], 10),
@@ -32,47 +47,18 @@ export function parseChromiumVersion(raw: string): [number, number, number, numb
     ];
   }
 
-  // 2. CDP Browser header format: "Chrome/156.0.8078.80", "HeadlessChrome/156.0.8078.80"
-  const cdpMatch = raw.match(/(?:Headless)?Chrome\/(\d+)\.(\d+)\.(\d+)\.(\d+)/i);
-  if (cdpMatch) {
+  // 3. Recognized Chrome product banner / header:
+  // "Google Chrome 156.0.8078.80", "Chrome/156.0.8078.80", "HeadlessChrome/156.0.8078.80",
+  // or User-Agent containing Chrome/X.Y.Z.W
+  const chromeMatch = trimmed.match(
+    /\b(?:Google Chrome(?:\s+Canary)?\s+|(?:Headless)?Chrome\/)(\d+)\.(\d+)\.(\d+)\.(\d+)\b/i,
+  );
+  if (chromeMatch) {
     return [
-      Number.parseInt(cdpMatch[1], 10),
-      Number.parseInt(cdpMatch[2], 10),
-      Number.parseInt(cdpMatch[3], 10),
-      Number.parseInt(cdpMatch[4], 10),
-    ];
-  }
-
-  // 3. Microsoft Edge CDP / CLI: "Edg/156.0.3065.92" or "Microsoft Edge 156.0.3065.92"
-  const edgeMatch = raw.match(/(?:Edg(?:e)?\/|Microsoft Edge\s+)(\d+)\.(\d+)\.(\d+)\.(\d+)/i);
-  if (edgeMatch) {
-    return [
-      Number.parseInt(edgeMatch[1], 10),
-      Number.parseInt(edgeMatch[2], 10),
-      Number.parseInt(edgeMatch[3], 10),
-      Number.parseInt(edgeMatch[4], 10),
-    ];
-  }
-
-  // 4. Google Chrome / Chromium banner: "Google Chrome 156.0.8078.80", "Chromium 156.0.8078.73"
-  const bannerMatch = raw.match(/(?:Google Chrome|Chromium)\s+(\d+)\.(\d+)\.(\d+)\.(\d+)/i);
-  if (bannerMatch) {
-    return [
-      Number.parseInt(bannerMatch[1], 10),
-      Number.parseInt(bannerMatch[2], 10),
-      Number.parseInt(bannerMatch[3], 10),
-      Number.parseInt(bannerMatch[4], 10),
-    ];
-  }
-
-  // 5. Clean 4-component version: "156.0.8078.80"
-  const cleanMatch = raw.match(/\b(\d+)\.(\d+)\.(\d+)\.(\d+)\b/);
-  if (cleanMatch) {
-    return [
-      Number.parseInt(cleanMatch[1], 10),
-      Number.parseInt(cleanMatch[2], 10),
-      Number.parseInt(cleanMatch[3], 10),
-      Number.parseInt(cleanMatch[4], 10),
+      Number.parseInt(chromeMatch[1], 10),
+      Number.parseInt(chromeMatch[2], 10),
+      Number.parseInt(chromeMatch[3], 10),
+      Number.parseInt(chromeMatch[4], 10),
     ];
   }
 
@@ -273,7 +259,10 @@ export function queryDarwinProcessSeatbeltState(pid: number): boolean {
   throw new Error(`Unexpected output from Seatbelt sandbox_check for PID ${pid}: "${output}"`);
 }
 
-const cdpSecurityCache = new Map<string, { version: string; checkedAt: number }>();
+const cdpSecurityCache = new Map<
+  string,
+  { version: string; isRelay?: boolean; checkedAt: number }
+>();
 
 export function clearCdpSecurityCache(): void {
   cdpSecurityCache.clear();
@@ -282,8 +271,8 @@ export function clearCdpSecurityCache(): void {
 /**
  * Validates the security baseline of a CDP endpoint before connection.
  * Fails closed if the endpoint cannot be contacted, returns missing/unparseable version,
+ * lacks verified underlying Chromium proof (e.g. extension relays),
  * or if the reported version is below MIN_CHROMIUM_SECURITY_VERSION.
- * Explicitly exempts the Moltbot extension relay (attaching to user's browser).
  */
 export async function assertCdpEndpointSecurity(
   cdpUrl: string,
@@ -292,7 +281,7 @@ export async function assertCdpEndpointSecurity(
 ): Promise<{ version: string; isRelay: boolean }> {
   const cached = cdpSecurityCache.get(cdpUrl);
   if (cached && Date.now() - cached.checkedAt < 10_000) {
-    return { version: cached.version, isRelay: cached.version === "extension-relay" };
+    return { version: cached.version, isRelay: Boolean(cached.isRelay) };
   }
 
   const normalized = cdpUrl.replace(/\/$/, "");
@@ -313,14 +302,14 @@ export async function assertCdpEndpointSecurity(
     );
   }
 
-  // Explicit, logged extension relay exemption
-  if (cdpVersion.Browser === "Moltbot/extension-relay") {
-    cdpSecurityCache.set(cdpUrl, { version: "extension-relay", checkedAt: Date.now() });
-    return { version: "extension-relay", isRelay: true };
-  }
-
+  const isRelay = /extension-relay/i.test(cdpVersion.Browser);
   const parsed = parseChromiumVersion(cdpVersion.Browser);
   if (!parsed) {
+    if (isRelay) {
+      throw new Error(
+        `Refusing CDP connection for ${context ?? cdpUrl}: extension relay at "${endpoint}" lacks verified underlying Chromium version proof. Underlying browser proof meeting baseline ${MIN_CHROMIUM_SECURITY_VERSION} is required.`,
+      );
+    }
     throw new Error(
       `Refusing CDP connection for ${context ?? cdpUrl}: unparseable Browser string "${cdpVersion.Browser}" from ${endpoint}.`,
     );
@@ -329,6 +318,6 @@ export async function assertCdpEndpointSecurity(
   const versionStr = parsed.join(".");
   assertBrowserSecurityBaseline(versionStr, context ?? `CDP endpoint at ${cdpUrl}`);
 
-  cdpSecurityCache.set(cdpUrl, { version: versionStr, checkedAt: Date.now() });
-  return { version: versionStr, isRelay: false };
+  cdpSecurityCache.set(cdpUrl, { version: versionStr, isRelay, checkedAt: Date.now() });
+  return { version: versionStr, isRelay };
 }

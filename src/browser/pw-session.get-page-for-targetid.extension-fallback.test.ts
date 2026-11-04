@@ -39,7 +39,9 @@ describe("pw-session getPageForTargetId", () => {
 
     vi.doMock("./chrome.js", () => ({
       getChromeWebSocketUrl: vi.fn(async () => null),
-      fetchChromeVersion: vi.fn(async () => ({ Browser: "Moltbot/extension-relay" })),
+      fetchChromeVersion: vi.fn(async () => ({
+        Browser: "Moltbot/extension-relay (Chromium 156.0.8078.80)",
+      })),
     }));
 
     vi.stubGlobal(
@@ -47,10 +49,13 @@ describe("pw-session getPageForTargetId", () => {
       vi.fn(async (url: string | URL | Request) => {
         const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
         if (urlStr.includes("/json/version")) {
-          return new Response(JSON.stringify({ Browser: "Moltbot/extension-relay" }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
+          return new Response(
+            JSON.stringify({ Browser: "Moltbot/extension-relay (Chromium 156.0.8078.80)" }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
         }
         return new Response("Not found", { status: 404 });
       }),

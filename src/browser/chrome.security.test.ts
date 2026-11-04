@@ -32,7 +32,7 @@ import { createTargetViaCdp } from "./cdp.js";
 
 describe("Chromium security baseline and version verification", () => {
   describe("version parsing and comparison", () => {
-    it("parses valid Chromium versions from various banner formats", () => {
+    it("parses valid Chromium versions from various banner formats and rejects vendor guesses", () => {
       expect(parseChromiumVersion("Google Chrome 156.0.8078.80")).toEqual([156, 0, 8078, 80]);
       expect(parseChromiumVersion("Chromium 156.0.8078.73")).toEqual([156, 0, 8078, 73]);
       expect(parseChromiumVersion("Chrome/156.0.8078.80")).toEqual([156, 0, 8078, 80]);
@@ -48,10 +48,33 @@ describe("Chromium security baseline and version verification", () => {
         156, 0, 8078, 80,
       ]);
 
-      // Real Microsoft Edge formats
-      expect(parseChromiumVersion("Microsoft Edge 133.0.3065.92")).toEqual([133, 0, 3065, 92]);
-      expect(parseChromiumVersion("Microsoft Edge 156.0.3065.92")).toEqual([156, 0, 3065, 92]);
-      expect(parseChromiumVersion("Edg/156.0.3065.92")).toEqual([156, 0, 3065, 92]);
+      // Extension relay with proven Chromium component
+      expect(parseChromiumVersion("Moltbot/extension-relay (Chromium 156.0.8078.80)")).toEqual([
+        156, 0, 8078, 80,
+      ]);
+      // Extension relay without underlying Chromium version proof
+      expect(parseChromiumVersion("Moltbot/extension-relay")).toBeNull();
+
+      // Microsoft Edge: vendor version guessing is rejected without explicit Chromium proof
+      expect(parseChromiumVersion("Microsoft Edge 133.0.3065.92")).toBeNull();
+      expect(parseChromiumVersion("Microsoft Edge 156.0.3065.92")).toBeNull();
+      expect(parseChromiumVersion("Edg/156.0.3065.92")).toBeNull();
+
+      // Microsoft Edge with explicit Chromium component or User-Agent with Chrome/ component
+      expect(parseChromiumVersion("Microsoft Edge 133.0.3065.92 Chromium: 156.0.8078.80")).toEqual([
+        156, 0, 8078, 80,
+      ]);
+      expect(
+        parseChromiumVersion(
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.80 Safari/537.36 Edg/156.0.3065.92",
+        ),
+      ).toEqual([156, 0, 8078, 80]);
+
+      // Arbitrary product banners and wrapper strings must not match
+      expect(parseChromiumVersion("Firefox/133.0.0.0")).toBeNull();
+      expect(parseChromiumVersion("Firefox 999.0.0.0")).toBeNull();
+      expect(parseChromiumVersion("Wrapper/999.0.0.0")).toBeNull();
+      expect(parseChromiumVersion("Wrapper 999.0.0.0 1.2.3.4")).toBeNull();
 
       expect(parseChromiumVersion("invalid-version")).toBeNull();
       expect(parseChromiumVersion("")).toBeNull();
@@ -430,7 +453,7 @@ describe("Chromium security baseline and version verification", () => {
             return Promise.resolve({
               ok: true,
               json: async () => ({
-                Browser: "Moltbot/extension-relay",
+                Browser: "Moltbot/extension-relay (Chromium 156.0.8078.80)",
                 webSocketDebuggerUrl: "ws://127.0.0.1:9223/devtools/browser/1",
               }),
             });
@@ -446,12 +469,59 @@ describe("Chromium security baseline and version verification", () => {
       );
 
       const securityProof = await assertCdpEndpointSecurity("http://127.0.0.1:9223");
+      expect(securityProof.version).toBe("156.0.8078.80");
       expect(securityProof.isRelay).toBe(true);
 
       const { getPageForTargetId } = await import("./pw-session.js");
       const page = await getPageForTargetId({ cdpUrl: "http://127.0.0.1:9223" });
       expect(connectSpy).toHaveBeenCalled();
       expect(page).toBe(mockPage);
+    });
+
+    it("assertCdpEndpointSecurity fails closed when extension relay lacks underlying Chromium proof", async () => {
+      clearCdpSecurityCache();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((url: string) => {
+          if (String(url).includes("/json/version")) {
+            return Promise.resolve({
+              ok: true,
+              json: async () => ({
+                Browser: "Moltbot/extension-relay",
+                webSocketDebuggerUrl: "ws://127.0.0.1:9224/devtools/browser/1",
+              }),
+            });
+          }
+          return Promise.resolve({ ok: false });
+        }),
+      );
+
+      await expect(assertCdpEndpointSecurity("http://127.0.0.1:9224")).rejects.toThrowError(
+        /extension relay at "http:\/\/127\.0\.0\.1:9224\/json\/version" lacks verified underlying Chromium version proof/,
+      );
+    });
+
+    it("assertCdpEndpointSecurity fails closed when extension relay reports vulnerable Chromium version", async () => {
+      clearCdpSecurityCache();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((url: string) => {
+          if (String(url).includes("/json/version")) {
+            return Promise.resolve({
+              ok: true,
+              json: async () => ({
+                Browser: "Moltbot/extension-relay (Chromium 133.0.6943.53)",
+                webSocketDebuggerUrl: "ws://127.0.0.1:9225/devtools/browser/1",
+              }),
+            });
+          }
+          return Promise.resolve({ ok: false });
+        }),
+      );
+
+      await expect(assertCdpEndpointSecurity("http://127.0.0.1:9225")).rejects.toThrowError(
+        /Refusing browser \(version 133\.0\.6943\.53\)/,
+      );
     });
 
     it("createTargetViaCdp fails closed when endpoint reports vulnerable browser", async () => {
@@ -725,21 +795,45 @@ describe("Chromium security baseline and version verification", () => {
       }
     });
 
-    it("getCachedBrowserExecutableVersion caches by mtime and size", () => {
+    it("getCachedBrowserExecutableVersion caches with content hash and invalidates on same-size-mtime swap", () => {
       clearExecutableVersionCache();
       const tmpFile = path.join(os.tmpdir(), `cache-test-${Date.now()}.bin`);
-      fs.writeFileSync(tmpFile, "test-binary-content");
+      fs.writeFileSync(tmpFile, "binary-v156-alpha");
 
       try {
-        const mockResolver = vi.fn(() => "156.0.8078.80");
+        const mockResolver = vi.fn((filePath: string) => {
+          const content = fs.readFileSync(filePath, "utf8");
+          if (content.includes("156")) return "156.0.8078.80";
+          if (content.includes("133")) return "133.0.6943.53";
+          return null;
+        });
+
+        // Fix timestamps to exact integer milliseconds so mtime matches across filesystem writes
+        const fixedTime = new Date(1700000000000);
+        fs.utimesSync(tmpFile, fixedTime, fixedTime);
+
         const v1 = getCachedBrowserExecutableVersion(tmpFile, mockResolver);
         expect(v1).toBe("156.0.8078.80");
         expect(mockResolver).toHaveBeenCalledTimes(1);
 
-        // Second call should return cached value without calling resolver again
+        // Second call with identical content should return cached value without calling resolver again
         const v2 = getCachedBrowserExecutableVersion(tmpFile, mockResolver);
         expect(v2).toBe("156.0.8078.80");
         expect(mockResolver).toHaveBeenCalledTimes(1);
+
+        // Perform causal regression test: same-size binary swap with restored mtime
+        const stBefore = fs.statSync(tmpFile);
+        expect("binary-v133-omega".length).toBe("binary-v156-alpha".length);
+        fs.writeFileSync(tmpFile, "binary-v133-omega");
+        fs.utimesSync(tmpFile, fixedTime, fixedTime);
+        const stAfter = fs.statSync(tmpFile);
+        expect(stAfter.size).toBe(stBefore.size);
+        expect(stAfter.mtimeMs).toBe(stBefore.mtimeMs);
+
+        // Authoritative content identity check: content hash changed, so stale version is NOT returned
+        const v3 = getCachedBrowserExecutableVersion(tmpFile, mockResolver);
+        expect(v3).toBe("133.0.6943.53");
+        expect(mockResolver).toHaveBeenCalledTimes(2);
       } finally {
         fs.unlinkSync(tmpFile);
       }

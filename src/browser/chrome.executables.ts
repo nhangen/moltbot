@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -371,9 +372,36 @@ export type FindExecutableOptions = {
   allowInsecureTestOnly?: boolean;
 };
 
+export function computeExecutableHash(exePath: string): string | null {
+  try {
+    const fd = fs.openSync(exePath, "r");
+    try {
+      const hash = crypto.createHash("sha256");
+      const buffer = Buffer.alloc(64 * 1024);
+      let bytesRead = 0;
+      while ((bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+        hash.update(buffer.subarray(0, bytesRead));
+      }
+      return hash.digest("hex");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
 const executableVersionCache = new Map<
   string,
-  { mtimeMs: number; size: number; version: string | null }
+  {
+    mtimeMs: number;
+    ctimeMs: number;
+    size: number;
+    ino: number;
+    dev: number;
+    contentHash: string;
+    version: string | null;
+  }
 >();
 
 export function clearExecutableVersionCache(): void {
@@ -387,11 +415,33 @@ export function getCachedBrowserExecutableVersion(
   try {
     const st = fs.statSync(exePath);
     const cached = executableVersionCache.get(exePath);
-    if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
-      return cached.version;
+    if (
+      cached &&
+      cached.mtimeMs === st.mtimeMs &&
+      cached.ctimeMs === st.ctimeMs &&
+      cached.size === st.size &&
+      cached.ino === st.ino &&
+      cached.dev === st.dev
+    ) {
+      // Authoritative content identity proof: verify cryptographic content hash matches
+      const currentHash = computeExecutableHash(exePath);
+      if (currentHash && currentHash === cached.contentHash) {
+        return cached.version;
+      }
     }
+    const contentHash = computeExecutableHash(exePath);
     const version = resolver(exePath);
-    executableVersionCache.set(exePath, { mtimeMs: st.mtimeMs, size: st.size, version });
+    if (contentHash) {
+      executableVersionCache.set(exePath, {
+        mtimeMs: st.mtimeMs,
+        ctimeMs: st.ctimeMs,
+        size: st.size,
+        ino: st.ino,
+        dev: st.dev,
+        contentHash,
+        version,
+      });
+    }
     return version;
   } catch {
     return resolver(exePath);
