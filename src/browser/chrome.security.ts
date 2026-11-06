@@ -230,7 +230,7 @@ export function assertProcessSandboxed(commandLine: string, platform = process.p
  * Returns true if the process is sandboxed (sandbox_check returns 1), false if unsandboxed (0).
  * Throws explicitly if the PID is invalid, dead/disappearing, or if the platform query fails.
  */
-export function queryDarwinProcessSeatbeltState(pid: number): boolean {
+export function queryDarwinProcessSeatbeltState(pid: number, timeoutMs = 3000): boolean {
   if (process.platform !== "darwin") {
     throw new Error(
       `queryDarwinProcessSeatbeltState is only supported on macOS (darwin), got ${process.platform}`,
@@ -260,7 +260,7 @@ export function queryDarwinProcessSeatbeltState(pid: number): boolean {
 
   const output = execFileSync(pythonBin, ["-c", pyScript], {
     encoding: "utf8",
-    timeout: 3000,
+    timeout: timeoutMs,
     stdio: ["pipe", "pipe", "pipe"],
   }).trim();
 

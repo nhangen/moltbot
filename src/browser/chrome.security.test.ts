@@ -554,7 +554,11 @@ describe("Chromium security baseline and version verification", () => {
       "queryDarwinProcessSeatbeltState verifies Seatbelt sandbox_check directly",
       () => {
         // Harness process self is not sandboxed (verifies checking self is NOT browser proof)
-        expect(queryDarwinProcessSeatbeltState(process.pid)).toBe(false);
+        // A cold CI runner's /usr/bin/python3 shim takes longer than the 3 s production limit.
+        expect(queryDarwinProcessSeatbeltState(process.pid, 60_000)).toBe(false);
+
+        // A probe that can't finish fails closed instead of reporting a sandbox state
+        expect(() => queryDarwinProcessSeatbeltState(process.pid, 1)).toThrow();
 
         // Rejects invalid PIDs
         expect(() => queryDarwinProcessSeatbeltState(0)).toThrowError(/Invalid PID/);
@@ -563,6 +567,7 @@ describe("Chromium security baseline and version verification", () => {
         // Fails explicitly on non-existent / disappearing target without accepting false-positive
         expect(() => queryDarwinProcessSeatbeltState(9999999)).toThrow();
       },
+      90_000,
     );
 
     const localChromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
