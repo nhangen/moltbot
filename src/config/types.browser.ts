@@ -28,7 +28,7 @@ export type BrowserConfig = {
   executablePath?: string;
   /** Start Chrome headless (best-effort). Default: false */
   headless?: boolean;
-  /** Pass --no-sandbox to Chrome (Linux containers). Default: false */
+  /** Unsupported: `true` refuses browser use. Kept so existing configs still parse. */
   noSandbox?: boolean;
   /** If true: never launch; only attach to an existing browser. Default: false */
   attachOnly?: boolean;

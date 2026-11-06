@@ -200,6 +200,55 @@ describe("CDP security gate production paths", () => {
     });
   });
 
+  describe("browser.noSandbox", () => {
+    const loopback = { cdpUrl: "http://127.0.0.1:18800", cdpPort: 18800 };
+    const remote = { cdpUrl: "https://browserless.example" };
+
+    function stateWithNoSandbox(profile: Record<string, unknown>, attachOnly: boolean) {
+      const state = makeState(profile, attachOnly);
+      state.resolved.noSandbox = true;
+      return state;
+    }
+
+    it.each([
+      ["an attachOnly loopback", loopback, true],
+      ["an already-running loopback", loopback, false],
+      ["a remote", remote, false],
+    ])("refuses %s browser that passes the version gate", async (_label, profile, attachOnly) => {
+      const calls = stubFetch({ Browser: "Chrome/156.0.8078.80" });
+      const onEnsureAttachTarget = vi.fn(async () => {});
+      const state = stateWithNoSandbox(profile, attachOnly);
+      const ctx = createBrowserRouteContext({ getState: () => state, onEnsureAttachTarget });
+
+      await expect(ctx.forProfile("work").ensureBrowserAvailable()).rejects.toBeInstanceOf(
+        BrowserSecurityRefusalError,
+      );
+      expect(calls).toEqual([]);
+      expect(chromeMocks.isChromeReachable).not.toHaveBeenCalled();
+      expect(onEnsureAttachTarget).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["loopback", loopback],
+      ["remote", remote],
+    ])("refuses every %s tab operation before any browser contact", async (_label, profile) => {
+      const calls = stubFetch({ Browser: "Chrome/156.0.8078.80" });
+      const state = stateWithNoSandbox(profile, false);
+      const profileCtx = createBrowserRouteContext({ getState: () => state }).forProfile("work");
+
+      for (const run of [
+        () => profileCtx.listTabs(),
+        () => profileCtx.openTab("https://agent.example"),
+        () => profileCtx.focusTab("ABC"),
+        () => profileCtx.closeTab("ABC"),
+      ]) {
+        await expect(run()).rejects.toBeInstanceOf(BrowserSecurityRefusalError);
+      }
+      expect(calls).toEqual([]);
+      expect(cdpMocks.createTargetViaCdp).not.toHaveBeenCalled();
+    });
+  });
+
   describe("remote CDP authentication and redaction", () => {
     it("sends the gate request to the CDP path with token query and Basic auth", async () => {
       const calls = stubFetch({ Browser: "Chrome/156.0.8078.80" });

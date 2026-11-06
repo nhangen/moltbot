@@ -67,7 +67,6 @@ Browser settings live in `~/.clawdbot/moltbot.json`.
     defaultProfile: "clawd",          // the built-in default `chrome` relay is refused
     color: "#FF4500",
     headless: false,
-    noSandbox: false,
     attachOnly: false,
     executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     profiles: {
@@ -194,6 +193,8 @@ Key ideas:
 Chromium security baseline:
 - Every CDP endpoint (managed, attached, remote, or sandboxed) must report Chromium 156.0.8078.73 or newer in `/json/version`. Older, unparseable, or missing versions are refused before Moltbot launches, attaches, opens, lists, focuses, or closes tabs.
 - Only Google Chrome, Chromium, and Chrome Canary builds get bundle (`Info.plist`/FileVersion) version proof. `--version` output must name Chrome or Chromium; a bare version number is refused. Opera, Vivaldi, Yandex, Arc, and unrecognized browsers never get executable version proof, so Moltbot won't launch them; attaching to one over CDP still works when its `/json/version` reports Chromium 156.0.8078.73 or newer.
+- Moltbot has no `--no-sandbox` option. When `browser.noSandbox` is `true`, Moltbot refuses to launch or attach to a browser. The sandbox browser image refuses to start when `CLAWDBOT_BROWSER_NO_SANDBOX` is set to anything other than `0`.
+- Moltbot can't verify that a browser's sandbox is active, whether Moltbot launched it or you started it. Start any browser you attach to over CDP without `--no-sandbox`.
 - Sandbox browser images must carry the `moltbot.sandbox-browser.security=sandboxed-v1` label. Rebuild older images with `scripts/sandbox-browser-setup.sh` and remove containers created from them.
 
 Remote CDP tips:
@@ -286,7 +287,7 @@ Builds that cannot prove Chromium 156.0.8078.73 or newer are skipped. You can ov
 Platforms:
 - macOS: checks `/Applications` and `~/Applications`.
 - Linux: looks for `google-chrome`, `brave`, `microsoft-edge`, `chromium`, etc.
-- Windows: checks common install locations.
+- Windows: uses the default browser only when it is Chrome, Chromium, or Chrome Canary at its standard install location, then checks common install locations.
 
 ## Control API (optional)
 

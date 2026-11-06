@@ -14,6 +14,7 @@ import {
   resolveBrowserExecutableForPlatform,
 } from "./chrome.executables.js";
 import {
+  assertBrowserSandboxEnabled,
   MIN_CHROMIUM_SECURITY_VERSION,
   assertBrowserSecurityBaseline,
   assertCdpBrowserProof,
@@ -183,6 +184,7 @@ export async function launchClawdChrome(
   resolved: ResolvedBrowserConfig,
   profile: ResolvedBrowserProfile,
 ): Promise<RunningChrome> {
+  assertBrowserSandboxEnabled(resolved.noSandbox);
   if (!profile.cdpIsLoopback) {
     throw new Error(`Profile "${profile.name}" is remote; cannot launch local Chrome.`);
   }
@@ -227,10 +229,6 @@ export async function launchClawdChrome(
       // Best-effort; older Chromes may ignore.
       args.push("--headless=new");
       args.push("--disable-gpu");
-    }
-    if (resolved.noSandbox) {
-      args.push("--no-sandbox");
-      args.push("--disable-setuid-sandbox");
     }
     if (process.platform === "linux") {
       args.push("--disable-dev-shm-usage");

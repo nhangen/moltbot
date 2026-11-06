@@ -69,7 +69,10 @@ afterEach(() => {
   fs.rmSync(stateDir, { recursive: true, force: true });
 });
 
-async function launchWithVersionBody(body: Record<string, unknown>) {
+async function launchWithVersionBody(
+  body: Record<string, unknown>,
+  overrides: Partial<ResolvedBrowserConfig> = {},
+) {
   vi.resetModules();
   const chrome = await import("./chrome.js");
   const userDataDir = chrome.resolveClawdUserDataDir(profile.name);
@@ -88,7 +91,7 @@ async function launchWithVersionBody(body: Record<string, unknown>) {
         : ({ ok: false, json: async () => ({}) } as unknown as Response),
     ),
   );
-  const result = chrome.launchClawdChrome(config, profile);
+  const result = chrome.launchClawdChrome({ ...config, ...overrides }, profile);
   return { proc, result };
 }
 
@@ -124,6 +127,21 @@ describe("launchClawdChrome post-launch version verification", () => {
     expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
   });
 
+  it("refuses browser.noSandbox before spawning anything", async () => {
+    const { result } = await launchWithVersionBody(
+      { Browser: "Chrome/156.0.8078.80" },
+      { noSandbox: true },
+    );
+    const err = await result.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    const { BrowserSecurityRefusalError } = await import("./chrome.security.js");
+    expect(err).toBeInstanceOf(BrowserSecurityRefusalError);
+    expect(String((err as Error).message)).toContain("browser.noSandbox");
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("returns the running browser without killing it for a patched version", async () => {
     const { proc, result } = await launchWithVersionBody({ Browser: "Chrome/156.0.8078.80" });
     const running = await result;
@@ -131,5 +149,6 @@ describe("launchClawdChrome post-launch version verification", () => {
     expect(proc.kill).not.toHaveBeenCalled();
     const [, args] = spawnMock.mock.calls[0];
     expect(args).not.toContain("--no-sandbox");
+    expect(args).not.toContain("--disable-setuid-sandbox");
   });
 });

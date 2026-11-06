@@ -77,6 +77,14 @@ export function assertBrowserSecurityBaseline(
   }
 }
 
+export function assertBrowserSandboxEnabled(noSandbox: boolean): void {
+  if (!noSandbox) return;
+  throw new BrowserSecurityRefusalError(
+    "Refusing browser: browser.noSandbox turns off the Chromium sandbox, which the security baseline requires. " +
+      "Remove browser.noSandbox from your config, and start any browser you attach to with its sandbox on.",
+  );
+}
+
 export type BrowserExecutableVersionOptions = {
   /**
    * Trust whole-quad bundle metadata (macOS Info.plist, Windows FileVersion). Only safe for
@@ -85,9 +93,17 @@ export type BrowserExecutableVersionOptions = {
   allowBundleVersion?: boolean;
 };
 
-export function resolveWindowsPowerShellPath(env: NodeJS.ProcessEnv = process.env): string {
+function resolveWindowsSystem32Path(env: NodeJS.ProcessEnv, ...segments: string[]): string {
   const systemRoot = env.SystemRoot?.trim() || env.windir?.trim() || "C:\\Windows";
-  return path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  return path.win32.join(systemRoot, "System32", ...segments);
+}
+
+export function resolveWindowsPowerShellPath(env: NodeJS.ProcessEnv = process.env): string {
+  return resolveWindowsSystem32Path(env, "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+export function resolveWindowsRegPath(env: NodeJS.ProcessEnv = process.env): string {
+  return resolveWindowsSystem32Path(env, "reg.exe");
 }
 
 export function getBrowserExecutableVersion(

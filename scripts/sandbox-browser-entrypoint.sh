@@ -12,6 +12,11 @@ NOVNC_PORT="${CLAWDBOT_BROWSER_NOVNC_PORT:-6080}"
 ENABLE_NOVNC="${CLAWDBOT_BROWSER_ENABLE_NOVNC:-1}"
 HEADLESS="${CLAWDBOT_BROWSER_HEADLESS:-0}"
 
+if [[ -n "${CLAWDBOT_BROWSER_NO_SANDBOX:-}" && "${CLAWDBOT_BROWSER_NO_SANDBOX}" != "0" ]]; then
+  echo "ERROR: CLAWDBOT_BROWSER_NO_SANDBOX is not supported: the Chromium sandbox cannot be disabled. Refusing to start." >&2
+  exit 1
+fi
+
 mkdir -p "${HOME}" "${HOME}/.chrome" "${XDG_CONFIG_HOME}" "${XDG_CACHE_HOME}"
 
 # Enforce minimum security baseline: Chrome CNA records 118306/118331/118348/118344 (156.0.8078.73+)
@@ -62,12 +67,6 @@ CHROME_ARGS+=(
   "--disable-crash-reporter"
   "--metrics-recording-only"
 )
-
-# Sandboxing preserved by default.
-if [[ "${CLAWDBOT_BROWSER_NO_SANDBOX:-0}" == "1" ]]; then
-  echo "WARNING: Running Chromium with --no-sandbox is insecure and not recommended." >&2
-  CHROME_ARGS+=("--no-sandbox")
-fi
 
 chromium "${CHROME_ARGS[@]}" about:blank &
 

@@ -9,6 +9,7 @@ import {
   assertBrowserSecurityBaseline,
   getBrowserExecutableVersion,
   isChromiumVersionAtLeast,
+  resolveWindowsRegPath,
 } from "./chrome.security.js";
 
 export type BrowserExecutable = {
@@ -135,14 +136,9 @@ const BUNDLE_ID_KINDS: Readonly<Record<string, BrowserExecutable["kind"]>> = {
   "org.chromium.Chromium": "chromium",
 };
 
-// Anything not listed (Opera's launcher.exe, Vivaldi, Yandex, Arc, unknown
-// names) is a fork: its vendor version number is never Chromium proof.
+// Anything not listed (Vivaldi, Yandex, Arc, unknown names) is a fork: its vendor
+// version number is never Chromium proof.
 const EXECUTABLE_NAME_KINDS: Readonly<Record<string, BrowserExecutable["kind"]>> = {
-  "chrome.exe": "chrome",
-  "msedge.exe": "edge",
-  "brave.exe": "brave",
-  "brave-browser.exe": "brave",
-  "chromium.exe": "chromium",
   "google chrome": "chrome",
   "google chrome canary": "canary",
   "brave browser": "brave",
@@ -269,7 +265,21 @@ function detectDefaultChromiumExecutableWindows(): BrowserExecutable | null {
   if (!exists(exePath)) return null;
   const exeName = path.win32.basename(exePath).toLowerCase();
   if (!CHROMIUM_EXE_NAMES.has(exeName)) return null;
-  return { kind: inferKindFromExecutableName(exeName), path: exePath };
+  return { kind: inferWindowsInstalledKind(exePath), path: exePath };
+}
+
+function normalizeWindowsPath(value: string): string {
+  return path.win32.normalize(value).toLowerCase();
+}
+
+// The registry value is user-writable and FileVersion is forgeable, so a chrome.exe
+// elsewhere earns no trust from its name: only vendor install locations keep their kind.
+function inferWindowsInstalledKind(exePath: string): BrowserExecutable["kind"] {
+  const target = normalizeWindowsPath(exePath);
+  const installed = windowsBrowserCandidates().find(
+    (candidate) => normalizeWindowsPath(candidate.path) === target,
+  );
+  return installed?.kind ?? "fork";
 }
 
 function findDesktopFilePath(desktopId: string): string | null {
@@ -350,7 +360,7 @@ function resolveLinuxExecutablePath(command: string): string | null {
 }
 
 function readWindowsProgId(): string | null {
-  const output = execText("reg", [
+  const output = execText(resolveWindowsRegPath(), [
     "query",
     "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice",
     "/v",
@@ -366,7 +376,7 @@ function readWindowsCommandForProgId(progId: string): string | null {
     progId === "http"
       ? "HKCR\\http\\shell\\open\\command"
       : `HKCR\\${progId}\\shell\\open\\command`;
-  const output = execText("reg", ["query", key, "/ve"]);
+  const output = execText(resolveWindowsRegPath(), ["query", key, "/ve"]);
   if (!output) return null;
   const match = output.match(/REG_\w+\s+(.+)$/im);
   return match?.[1]?.trim() || null;
@@ -380,9 +390,10 @@ function expandWindowsEnvVars(value: string): string {
 }
 
 function extractWindowsExecutablePath(command: string): string | null {
-  const quoted = command.match(/"([^"]+\\.exe)"/i);
+  const trimmed = command.trim();
+  const quoted = trimmed.match(/^"([A-Za-z]:\\[^"]+\.exe)"/i);
   if (quoted?.[1]) return quoted[1];
-  const unquoted = command.match(/([^\\s]+\\.exe)/i);
+  const unquoted = trimmed.match(/^([A-Za-z]:\\[^"]*?\.exe)(?=\s|$)/i);
   if (unquoted?.[1]) return unquoted[1];
   return null;
 }
@@ -594,9 +605,7 @@ export function findChromeExecutableLinux(
   return findFirstExecutable(candidates, opts);
 }
 
-export function findChromeExecutableWindows(
-  options?: FindExecutableOptions,
-): BrowserExecutable | null {
+function windowsBrowserCandidates(): Array<BrowserExecutable> {
   const localAppData = process.env.LOCALAPPDATA ?? "";
   const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
   // Must use bracket notation: variable name contains parentheses
@@ -664,12 +673,18 @@ export function findChromeExecutableWindows(
     path: joinWin(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
   });
 
+  return candidates;
+}
+
+export function findChromeExecutableWindows(
+  options?: FindExecutableOptions,
+): BrowserExecutable | null {
   const opts: FindExecutableOptions = {
     ...options,
     enforceSecurity:
       options?.enforceSecurity ?? (options?.versionResolver ? true : process.platform === "win32"),
   };
-  return findFirstExecutable(candidates, opts);
+  return findFirstExecutable(windowsBrowserCandidates(), opts);
 }
 
 export function resolveBrowserExecutableForPlatform(

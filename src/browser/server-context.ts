@@ -9,6 +9,7 @@ import {
   stopClawdChrome,
 } from "./chrome.js";
 import {
+  assertBrowserSandboxEnabled,
   assertCdpEndpointSecurity,
   isBrowserSecurityError,
   redactCdpUrl,
@@ -106,7 +107,12 @@ function createProfileContext(
     profileState.running = running;
   };
 
+  const assertSandboxNotDisabled = () => {
+    assertBrowserSandboxEnabled(state().resolved.noSandbox);
+  };
+
   const listTabs = async (): Promise<BrowserTab[]> => {
+    assertSandboxNotDisabled();
     // For remote profiles, use Playwright's persistent connection to avoid ephemeral sessions
     if (!profile.cdpIsLoopback) {
       const mod = await getPwAiModule({ mode: "strict" });
@@ -144,6 +150,7 @@ function createProfileContext(
   };
 
   const openTab = async (url: string): Promise<BrowserTab> => {
+    assertSandboxNotDisabled();
     // For remote profiles, use Playwright's persistent connection to create tabs
     // This ensures the tab persists beyond a single request
     if (!profile.cdpIsLoopback) {
@@ -358,6 +365,7 @@ function createProfileContext(
 
   // Every successful exit, including attach, extension, and restart-attach, must pass the baseline gate.
   const ensureBrowserAvailable = async (): Promise<void> => {
+    assertSandboxNotDisabled();
     await reachBrowser();
     await assertCdpEndpointSecurity(profile.cdpUrl, `browser for profile "${profile.name}"`);
   };

@@ -54,6 +54,7 @@ beforeEach(() => {
 afterEach(() => {
   setPlatform(realPlatform);
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -149,34 +150,98 @@ describe("Windows explicit executablePath", () => {
   });
 });
 
-describe("Windows default-browser kind allowlist", () => {
-  // Pins the end-to-end outcome only: extractWindowsExecutablePath predates this
-  // change and never matches a real ".exe" path, so this stays green with or
-  // without the kind allowlist until that parser is fixed.
-  it("yields no trusted default browser for Opera's launcher.exe", () => {
+describe("Windows default-browser detection", () => {
+  const LOCAL = "C:\\Users\\t\\AppData\\Local";
+  const CHROME_USER = `${LOCAL}\\Google\\Chrome\\Application\\chrome.exe`;
+  const CANARY_USER = `${LOCAL}\\Google\\Chrome SxS\\Application\\chrome.exe`;
+  const CHROME_SYSTEM = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  const FORGED_VERSION = "156.0.8078.80\r\n";
+
+  function stubDefaultBrowser(command: string, installed: string[]) {
     setPlatform("win32");
-    const exe = path.join(tmpDir, "Opera", "launcher.exe");
-    fs.mkdirSync(path.dirname(exe), { recursive: true });
-    fs.writeFileSync(exe, "");
-    const realExists = fs.existsSync;
-    vi.spyOn(fs, "existsSync").mockImplementation((p) =>
-      String(p).startsWith(tmpDir) ? realExists(p) : false,
-    );
+    vi.stubEnv("LOCALAPPDATA", LOCAL);
+    vi.stubEnv("ProgramFiles", "C:\\Program Files");
+    vi.stubEnv("ProgramFiles(x86)", "C:\\Program Files (x86)");
+    vi.stubEnv("SystemRoot", "C:\\Windows");
+    vi.spyOn(fs, "existsSync").mockImplementation((p) => installed.includes(String(p)));
     execFileSyncMock.mockImplementation((cmd: string, args: string[]) => {
-      if (cmd === "reg" && args.some((a) => a.includes("UserChoice"))) {
-        return "    ProgId    REG_SZ    OperaStable\r\n";
+      if (cmd.toLowerCase().endsWith("powershell.exe")) return FORGED_VERSION;
+      if (cmd !== "C:\\Windows\\System32\\reg.exe") throw new Error(`unexpected ${cmd}`);
+      if (args[1].endsWith("\\UserChoice")) {
+        return `\r\n${args[1]}\r\n    ProgId    REG_SZ    ChromeHTML\r\n\r\n`;
       }
-      if (cmd === "reg") return `    (Default)    REG_SZ    "${exe}" -- "%1"\r\n`;
-      if (cmd.toLowerCase().endsWith("powershell.exe")) return "156.0.8078.80";
-      throw new Error(`unexpected ${cmd}`);
+      if (args[1] === "HKCR\\ChromeHTML\\shell\\open\\command") {
+        return `\r\n${args[1]}\r\n    (Default)    REG_SZ    ${command}\r\n\r\n`;
+      }
+      throw new Error(`unexpected key ${args[1]}`);
     });
+  }
+
+  function powershellProbes() {
+    return execFileSyncMock.mock.calls.filter(([cmd]) =>
+      String(cmd).toLowerCase().endsWith("powershell.exe"),
+    );
+  }
+
+  it.each([
+    ["quoted", `"${CANARY_USER}" --single-argument %1`],
+    ["unquoted with spaces", `${CANARY_USER} --single-argument %1`],
+    ["bare", CANARY_USER],
+    ["env-var", `"%LOCALAPPDATA%\\Google\\Chrome SxS\\Application\\chrome.exe" -- "%1"`],
+  ])("selects the default browser from a %s registry command", (_label, command) => {
+    stubDefaultBrowser(command, [CHROME_USER, CANARY_USER]);
+
+    expect(resolveBrowserExecutableForPlatform(makeConfig(), "win32")).toEqual({
+      kind: "canary",
+      path: CANARY_USER,
+      version: "156.0.8078.80",
+    });
+  });
+
+  it("matches install locations case-insensitively", () => {
+    const spelled = CANARY_USER.toUpperCase();
+    stubDefaultBrowser(`"${spelled}" -- "%1"`, [CHROME_USER, spelled]);
+
+    expect(resolveBrowserExecutableForPlatform(makeConfig(), "win32")?.kind).toBe("canary");
+  });
+
+  it.each([
+    ["an unknown location", `"C:\\Temp\\chrome.exe" -- "%1"`, "C:\\Temp\\chrome.exe"],
+    ["an unquoted unknown location", "C:\\Temp\\chrome.exe -- %1", "C:\\Temp\\chrome.exe"],
+    [
+      "a traversal out of the install location",
+      `"C:\\Program Files\\Google\\Chrome\\Application\\..\\..\\..\\..\\Temp\\chrome.exe"`,
+      "C:\\Program Files\\Google\\Chrome\\Application\\..\\..\\..\\..\\Temp\\chrome.exe",
+    ],
+    ["a relative path", `"chrome.exe" -- "%1"`, "chrome.exe"],
+    ["a UNC path", `"\\\\host\\share\\chrome.exe"`, "\\\\host\\share\\chrome.exe"],
+    ["a wrapper argument", `C:\\Temp\\run.cmd "${CHROME_SYSTEM}"`, "C:\\Temp\\run.cmd"],
+    ["an interpreter argument", `C:\\Temp\\cmd.exe /c "${CHROME_SYSTEM}"`, "C:\\Temp\\cmd.exe"],
+    ["Opera's launcher", `"${LOCAL}\\Programs\\Opera\\launcher.exe"`, "launcher.exe"],
+  ])("gives no FileVersion trust to %s", (_label, command, onDisk) => {
+    stubDefaultBrowser(command, [onDisk, `${LOCAL}\\Programs\\Opera\\launcher.exe`]);
 
     expect(resolveBrowserExecutableForPlatform(makeConfig(), "win32")).toBeNull();
-    expect(
-      execFileSyncMock.mock.calls.some(([cmd]) =>
-        String(cmd).toLowerCase().endsWith("powershell.exe"),
-      ),
-    ).toBe(false);
+    expect(powershellProbes()).toEqual([]);
+  });
+
+  it("gives no FileVersion trust to Edge at its install location", () => {
+    const edge = "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe";
+    stubDefaultBrowser(`"${edge}" --single-argument %1`, [edge]);
+
+    expect(resolveBrowserExecutableForPlatform(makeConfig(), "win32")).toBeNull();
+    expect(powershellProbes()).toEqual([]);
+  });
+
+  it("falls back to an installed Chrome when the default browser is untrusted", () => {
+    stubDefaultBrowser(`"C:\\Temp\\chrome.exe"`, ["C:\\Temp\\chrome.exe", CHROME_SYSTEM]);
+
+    expect(resolveBrowserExecutableForPlatform(makeConfig(), "win32")).toEqual({
+      kind: "chrome",
+      path: CHROME_SYSTEM,
+      version: "156.0.8078.80",
+    });
+    expect(powershellProbes()).toHaveLength(1);
   });
 });
 
