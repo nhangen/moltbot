@@ -28,7 +28,7 @@ fi
 IFS='.' read -r v1 v2 v3 v4 <<< "${CHROME_VER_NUM}"
 IFS='.' read -r m1 m2 m3 m4 <<< "${MIN_CHROMIUM_SECURITY_VERSION}"
 if (( v1 < m1 || (v1 == m1 && (v2 < m2 || (v2 == m2 && (v3 < m3 || (v3 == m3 && v4 < m4))))))); then
-  echo "ERROR: Sandbox Chromium version ${CHROME_VER_NUM} is below security baseline ${MIN_CHROMIUM_SECURITY_VERSION} (CVE-2026-118306)." >&2
+  echo "ERROR: Sandbox Chromium version ${CHROME_VER_NUM} is below security baseline ${MIN_CHROMIUM_SECURITY_VERSION} (Chrome CNA records 118306/118331/118348/118344)." >&2
   exit 1
 fi
 

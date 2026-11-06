@@ -104,6 +104,10 @@ vi.mock("../config/config.js", async (importOriginal) => {
 });
 
 const launchCalls = vi.hoisted(() => [] as Array<{ port: number }>);
+vi.mock("./chrome.executables.js", () => ({
+  resolveBrowserExecutableForPlatform: vi.fn(() => null),
+}));
+
 vi.mock("./chrome.js", () => ({
   isChromeCdpReady: vi.fn(async () => reachable),
   isChromeReachable: vi.fn(async () => reachable),
@@ -207,6 +211,7 @@ describe("browser control server", () => {
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
         const u = String(url);
+        if (u.includes("/json/version")) return makeResponse({ Browser: "Chrome/156.0.8078.80" });
         if (u.includes("/json/list")) {
           if (!reachable) return makeResponse([]);
           return makeResponse([

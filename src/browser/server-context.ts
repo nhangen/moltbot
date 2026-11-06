@@ -8,7 +8,11 @@ import {
   resolveClawdUserDataDir,
   stopClawdChrome,
 } from "./chrome.js";
-import { assertCdpEndpointSecurity } from "./chrome.security.js";
+import {
+  assertCdpEndpointSecurity,
+  isBrowserSecurityError,
+  redactCdpUrl,
+} from "./chrome.security.js";
 import type { ResolvedBrowserProfile } from "./config.js";
 import { resolveProfile } from "./config.js";
 import type {
@@ -118,6 +122,7 @@ function createProfileContext(
       }
     }
 
+    await assertCdpEndpointSecurity(profile.cdpUrl, `tab access for profile "${profile.name}"`);
     const raw = await fetchJson<
       Array<{
         id?: string;
@@ -162,14 +167,20 @@ function createProfileContext(
       url,
     })
       .then((r) => r.targetId)
-      .catch(() => null);
+      .catch((err) => {
+        if (isBrowserSecurityError(err)) throw err;
+        return null;
+      });
 
     if (createdViaCdp) {
       const profileState = getProfileState();
       profileState.lastTargetId = createdViaCdp;
       const deadline = Date.now() + 2000;
       while (Date.now() < deadline) {
-        const tabs = await listTabs().catch(() => [] as BrowserTab[]);
+        const tabs = await listTabs().catch((err) => {
+          if (isBrowserSecurityError(err)) throw err;
+          return [] as BrowserTab[];
+        });
         const found = tabs.find((t) => t.targetId === createdViaCdp);
         if (found) return found;
         await new Promise((r) => setTimeout(r, 100));
@@ -186,6 +197,7 @@ function createProfileContext(
       type?: string;
     };
 
+    await assertCdpEndpointSecurity(profile.cdpUrl, `tab creation for profile "${profile.name}"`);
     const endpointUrl = new URL(appendCdpPath(profile.cdpUrl, "/json/new"));
     const endpoint = endpointUrl.search
       ? (() => {
@@ -258,7 +270,7 @@ function createProfileContext(
     });
   };
 
-  const ensureBrowserAvailable = async (): Promise<void> => {
+  const reachBrowser = async (): Promise<void> => {
     const current = state();
     const remoteCdp = !profile.cdpIsLoopback;
     const isExtension = profile.driver === "extension";
@@ -267,7 +279,7 @@ function createProfileContext(
 
     if (isExtension && remoteCdp) {
       throw new Error(
-        `Profile "${profile.name}" uses driver=extension but cdpUrl is not loopback (${profile.cdpUrl}).`,
+        `Profile "${profile.name}" uses driver=extension but cdpUrl is not loopback (${redactCdpUrl(profile.cdpUrl)}).`,
       );
     }
 
@@ -278,7 +290,7 @@ function createProfileContext(
           // continue: we still need the extension to connect for CDP websocket.
         } else {
           throw new Error(
-            `Chrome extension relay for profile "${profile.name}" is not reachable at ${profile.cdpUrl}.`,
+            `Chrome extension relay for profile "${profile.name}" is not reachable at ${redactCdpUrl(profile.cdpUrl)}.`,
           );
         }
       }
@@ -298,7 +310,7 @@ function createProfileContext(
       if (current.resolved.attachOnly || remoteCdp) {
         throw new Error(
           remoteCdp
-            ? `Remote CDP for profile "${profile.name}" is not reachable at ${profile.cdpUrl}.`
+            ? `Remote CDP for profile "${profile.name}" is not reachable at ${redactCdpUrl(profile.cdpUrl)}.`
             : `Browser attachOnly is enabled and profile "${profile.name}" is not running.`,
         );
       }
@@ -308,15 +320,7 @@ function createProfileContext(
     }
 
     // Port is reachable - check if we own it
-    if (await isReachable()) {
-      if (!profileState.running) {
-        await assertCdpEndpointSecurity(
-          profile.cdpUrl,
-          `pre-existing browser for profile "${profile.name}"`,
-        );
-      }
-      return;
-    }
+    if (await isReachable()) return;
 
     // HTTP responds but WebSocket fails - port in use by something else
     if (!profileState.running) {
@@ -350,6 +354,12 @@ function createProfileContext(
         `Chrome CDP websocket for profile "${profile.name}" is not reachable after restart.`,
       );
     }
+  };
+
+  // Every successful exit, including attach, extension, and restart-attach, must pass the baseline gate.
+  const ensureBrowserAvailable = async (): Promise<void> => {
+    await reachBrowser();
+    await assertCdpEndpointSecurity(profile.cdpUrl, `browser for profile "${profile.name}"`);
   };
 
   const ensureTabAvailable = async (targetId?: string): Promise<BrowserTab> => {

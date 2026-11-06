@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 describe("pw-session getPageForTargetId", () => {
-  it("falls back to the only page when CDP session attachment is blocked (extension relays)", async () => {
+  it("falls back to the only page when CDP session attachment is blocked", async () => {
     vi.resetModules();
 
     const pageOn = vi.fn();
@@ -39,9 +39,6 @@ describe("pw-session getPageForTargetId", () => {
 
     vi.doMock("./chrome.js", () => ({
       getChromeWebSocketUrl: vi.fn(async () => null),
-      fetchChromeVersion: vi.fn(async () => ({
-        Browser: "Moltbot/extension-relay (Chromium 156.0.8078.80)",
-      })),
     }));
 
     vi.stubGlobal(
@@ -49,13 +46,10 @@ describe("pw-session getPageForTargetId", () => {
       vi.fn(async (url: string | URL | Request) => {
         const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
         if (urlStr.includes("/json/version")) {
-          return new Response(
-            JSON.stringify({ Browser: "Moltbot/extension-relay (Chromium 156.0.8078.80)" }),
-            {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            },
-          );
+          return new Response(JSON.stringify({ Browser: "Chrome/156.0.8078.80" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
         }
         return new Response("Not found", { status: 404 });
       }),
@@ -70,6 +64,35 @@ describe("pw-session getPageForTargetId", () => {
 
     await mod.closePlaywrightBrowserConnection();
     expect(browserClose).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("refuses the real extension relay banner before connecting", async () => {
+    vi.resetModules();
+    const connectOverCDP = vi.fn(async () => {
+      throw new Error("Sentinel: connectOverCDP must not be called");
+    });
+    vi.doMock("playwright-core", () => ({ chromium: { connectOverCDP } }));
+    vi.doMock("./chrome.js", () => ({ getChromeWebSocketUrl: vi.fn(async () => null) }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        if (urlStr.includes("/json/version")) {
+          return new Response(JSON.stringify({ Browser: "Moltbot/extension-relay" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("Not found", { status: 404 });
+      }),
+    );
+
+    const mod = await import("./pw-session.js");
+    await expect(
+      mod.getPageForTargetId({ cdpUrl: "http://127.0.0.1:18792", targetId: "NOT_A_TAB" }),
+    ).rejects.toThrowError(/extension relay does not yet support verifiable/);
+    expect(connectOverCDP).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 });

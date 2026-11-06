@@ -16,6 +16,17 @@ import {
 } from "./chrome.js";
 import { DEFAULT_CLAWD_BROWSER_COLOR, DEFAULT_CLAWD_BROWSER_PROFILE_NAME } from "./constants.js";
 
+// Finder tests spy existsSync onto real install paths; never execute the host's browser binaries.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFileSync: vi.fn(() => {
+      throw new Error("execFileSync is disabled in chrome.test.ts");
+    }),
+  };
+});
+
 async function readJson(filePath: string): Promise<Record<string, unknown>> {
   const raw = await fsp.readFile(filePath, "utf-8");
   return JSON.parse(raw) as Record<string, unknown>;
@@ -144,9 +155,19 @@ describe("browser chrome helpers", () => {
       .mockImplementation((p) =>
         String(p).includes("Google Chrome.app/Contents/MacOS/Google Chrome"),
       );
-    const exe = findChromeExecutableMac();
+    const exe = findChromeExecutableMac({ versionResolver: () => "156.0.8078.80" });
     expect(exe?.kind).toBe("chrome");
     expect(exe?.path).toMatch(/Google Chrome\.app/);
+    exists.mockRestore();
+  });
+
+  it("refuses the macOS Chrome candidate when its version cannot be proven", () => {
+    const exists = vi
+      .spyOn(fs, "existsSync")
+      .mockImplementation((p) =>
+        String(p).includes("Google Chrome.app/Contents/MacOS/Google Chrome"),
+      );
+    expect(findChromeExecutableMac({ versionResolver: () => null })).toBeNull();
     exists.mockRestore();
   });
 

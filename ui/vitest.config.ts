@@ -2,30 +2,12 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
-
-const MIN_CHROMIUM_SECURITY_VERSION = "156.0.8078.73";
-
-function parseChromiumVersion(raw: string): number[] | null {
-  const match = raw.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)/);
-  if (!match) return null;
-  return [
-    Number.parseInt(match[1], 10),
-    Number.parseInt(match[2], 10),
-    Number.parseInt(match[3], 10),
-    Number.parseInt(match[4], 10),
-  ];
-}
-
-function isVersionSecure(versionStr: string): boolean {
-  const v = parseChromiumVersion(versionStr);
-  const min = parseChromiumVersion(MIN_CHROMIUM_SECURITY_VERSION);
-  if (!v || !min) return false;
-  for (let i = 0; i < 4; i += 1) {
-    if (v[i] > min[i]) return true;
-    if (v[i] < min[i]) return false;
-  }
-  return true;
-}
+import {
+  CHROMIUM_SECURITY_CNA_RECORDS,
+  MIN_CHROMIUM_SECURITY_VERSION,
+  isChromiumVersionAtLeast,
+  parseChromiumProductVersion,
+} from "../src/browser/chromium-version";
 
 function resolveSecureBrowser(): { channel?: string; executablePath?: string; version: string } {
   // 1. Explicit env var
@@ -39,11 +21,10 @@ function resolveSecureBrowser(): { channel?: string; executablePath?: string; ve
       timeout: 3000,
       stdio: ["pipe", "pipe", "ignore"],
     });
-    const match = out.match(/(\d+\.\d+\.\d+\.\d+)/);
-    const ver = match?.[1];
-    if (!ver || !isVersionSecure(ver)) {
+    const ver = parseChromiumProductVersion(out)?.join(".");
+    if (!ver || !isChromiumVersionAtLeast(ver)) {
       throw new Error(
-        `MOLTBOT_BROWSER_EXECUTABLE (${customExe}) version ${ver ?? "unknown"} is below security baseline ${MIN_CHROMIUM_SECURITY_VERSION}`,
+        `MOLTBOT_BROWSER_EXECUTABLE (${customExe}) version ${ver ?? "unproven (--version must name Chrome or Chromium)"} does not meet security baseline ${MIN_CHROMIUM_SECURITY_VERSION}`,
       );
     }
     return { executablePath: customExe, version: ver };
@@ -58,9 +39,8 @@ function resolveSecureBrowser(): { channel?: string; executablePath?: string; ve
         timeout: 3000,
         stdio: ["pipe", "pipe", "ignore"],
       });
-      const match = out.match(/(\d+\.\d+\.\d+\.\d+)/);
-      const ver = match?.[1];
-      if (ver && isVersionSecure(ver)) {
+      const ver = parseChromiumProductVersion(out)?.join(".");
+      if (ver && isChromiumVersionAtLeast(ver)) {
         return { channel: "chrome", executablePath: macChrome, version: ver };
       }
     } catch {
@@ -77,9 +57,8 @@ function resolveSecureBrowser(): { channel?: string; executablePath?: string; ve
         timeout: 3000,
         stdio: ["pipe", "pipe", "ignore"],
       });
-      const match = out.match(/(\d+\.\d+\.\d+\.\d+)/);
-      const ver = match?.[1];
-      if (ver && isVersionSecure(ver)) {
+      const ver = parseChromiumProductVersion(out)?.join(".");
+      if (ver && isChromiumVersionAtLeast(ver)) {
         return { channel: "chrome", executablePath: linuxChrome, version: ver };
       }
     } catch {
@@ -88,15 +67,15 @@ function resolveSecureBrowser(): { channel?: string; executablePath?: string; ve
   }
 
   throw new Error(
-    `No secure browser found meeting baseline ${MIN_CHROMIUM_SECURITY_VERSION} (CVE-2026-118306). ` +
+    `No secure browser found meeting baseline ${MIN_CHROMIUM_SECURITY_VERSION} (Chrome CNA records ${CHROMIUM_SECURITY_CNA_RECORDS.join("/")}). ` +
       `Playwright bundled Chromium (rev 1208 / 145.0) is unpatched and fallback is disabled. ` +
-      `Install Google Chrome >= 156.0.8078.73 or set MOLTBOT_BROWSER_EXECUTABLE.`,
+      `Install Google Chrome >= ${MIN_CHROMIUM_SECURITY_VERSION} or set MOLTBOT_BROWSER_EXECUTABLE.`,
   );
 }
 
 const secureBrowser = resolveSecureBrowser();
 console.log(
-  `[UI vitest] Selected verified secure browser at "${secureBrowser.executablePath ?? secureBrowser.channel}" (version ${secureBrowser.version}) with chromiumSandbox=true`,
+  `[UI vitest] Selected browser proving the version baseline at "${secureBrowser.executablePath ?? secureBrowser.channel}" (version ${secureBrowser.version}) with chromiumSandbox=true`,
 );
 
 export default defineConfig({

@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,7 +12,7 @@ import {
 } from "./chrome.security.js";
 
 export type BrowserExecutable = {
-  kind: "brave" | "canary" | "chromium" | "chrome" | "custom" | "edge";
+  kind: "brave" | "canary" | "chromium" | "chrome" | "custom" | "edge" | "fork";
   path: string;
   version?: string;
 };
@@ -121,32 +120,55 @@ function execText(
   }
 }
 
+const BUNDLE_ID_KINDS: Readonly<Record<string, BrowserExecutable["kind"]>> = {
+  "com.google.Chrome": "chrome",
+  "com.google.Chrome.beta": "chrome",
+  "com.google.Chrome.dev": "chrome",
+  "com.google.Chrome.canary": "canary",
+  "com.brave.Browser": "brave",
+  "com.brave.Browser.beta": "brave",
+  "com.brave.Browser.nightly": "brave",
+  "com.microsoft.Edge": "edge",
+  "com.microsoft.EdgeBeta": "edge",
+  "com.microsoft.EdgeDev": "edge",
+  "com.microsoft.EdgeCanary": "edge",
+  "org.chromium.Chromium": "chromium",
+};
+
+// Anything not listed (Opera's launcher.exe, Vivaldi, Yandex, Arc, unknown
+// names) is a fork: its vendor version number is never Chromium proof.
+const EXECUTABLE_NAME_KINDS: Readonly<Record<string, BrowserExecutable["kind"]>> = {
+  "chrome.exe": "chrome",
+  "msedge.exe": "edge",
+  "brave.exe": "brave",
+  "brave-browser.exe": "brave",
+  "chromium.exe": "chromium",
+  "google chrome": "chrome",
+  "google chrome canary": "canary",
+  "brave browser": "brave",
+  "microsoft edge": "edge",
+  chromium: "chromium",
+  chrome: "chrome",
+  brave: "brave",
+  msedge: "edge",
+  "brave-browser": "brave",
+  "google-chrome": "chrome",
+  "google-chrome-stable": "chrome",
+  "google-chrome-beta": "chrome",
+  "google-chrome-unstable": "chrome",
+  "microsoft-edge": "edge",
+  "microsoft-edge-beta": "edge",
+  "microsoft-edge-dev": "edge",
+  "microsoft-edge-canary": "edge",
+  "chromium-browser": "chromium",
+};
+
 function inferKindFromIdentifier(identifier: string): BrowserExecutable["kind"] {
-  const id = identifier.toLowerCase();
-  if (id.includes("brave")) return "brave";
-  if (id.includes("edge")) return "edge";
-  if (id.includes("chromium")) return "chromium";
-  if (id.includes("canary")) return "canary";
-  if (
-    id.includes("opera") ||
-    id.includes("vivaldi") ||
-    id.includes("yandex") ||
-    id.includes("thebrowser")
-  ) {
-    return "chromium";
-  }
-  return "chrome";
+  return BUNDLE_ID_KINDS[identifier] ?? "fork";
 }
 
 function inferKindFromExecutableName(name: string): BrowserExecutable["kind"] {
-  const lower = name.toLowerCase();
-  if (lower.includes("brave")) return "brave";
-  if (lower.includes("edge") || lower.includes("msedge")) return "edge";
-  if (lower.includes("chromium")) return "chromium";
-  if (lower.includes("canary") || lower.includes("sxs")) return "canary";
-  if (lower.includes("opera") || lower.includes("vivaldi") || lower.includes("yandex"))
-    return "chromium";
-  return "chrome";
+  return EXECUTABLE_NAME_KINDS[name.toLowerCase()] ?? "fork";
 }
 
 function detectDefaultChromiumExecutable(platform: NodeJS.Platform): BrowserExecutable | null {
@@ -372,80 +394,96 @@ export type FindExecutableOptions = {
   allowInsecureTestOnly?: boolean;
 };
 
-export function computeExecutableHash(exePath: string): string | null {
+type StatIdentity = { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number };
+
+function statIdentity(target: string): StatIdentity | null {
   try {
-    const fd = fs.openSync(exePath, "r");
-    try {
-      const hash = crypto.createHash("sha256");
-      const buffer = Buffer.alloc(64 * 1024);
-      let bytesRead = 0;
-      while ((bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
-        hash.update(buffer.subarray(0, bytesRead));
-      }
-      return hash.digest("hex");
-    } finally {
-      fs.closeSync(fd);
-    }
+    const st = fs.statSync(target);
+    return { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
   } catch {
     return null;
   }
 }
 
+function sameIdentity(a: StatIdentity | null, b: StatIdentity | null): boolean {
+  if (!a || !b) return a === b;
+  return (
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeMs === b.mtimeMs &&
+    a.ctimeMs === b.ctimeMs
+  );
+}
+
+function bundleInfoPlistPath(exePath: string): string | null {
+  const idx = exePath.indexOf(".app/");
+  if (idx < 0) return null;
+  return path.join(exePath.slice(0, idx + 4), "Contents", "Info.plist");
+}
+
+const BUNDLE_VERSION_KINDS: ReadonlySet<BrowserExecutable["kind"]> = new Set([
+  "chrome",
+  "chromium",
+  "canary",
+]);
+
+export function allowsBundleVersionProof(kind: BrowserExecutable["kind"]): boolean {
+  return BUNDLE_VERSION_KINDS.has(kind);
+}
+
 const executableVersionCache = new Map<
   string,
-  {
-    mtimeMs: number;
-    ctimeMs: number;
-    size: number;
-    ino: number;
-    dev: number;
-    contentHash: string;
-    version: string | null;
-  }
+  { exe: StatIdentity; plist: StatIdentity | null; version: string | null }
 >();
 
 export function clearExecutableVersionCache(): void {
   executableVersionCache.clear();
 }
 
+/**
+ * Caches version proof per resolved executable. Any change to the binary's or (macOS) the bundle
+ * Info.plist's dev/ino/size/mtime/ctime invalidates the entry; ctime cannot be restored by utimes.
+ */
 export function getCachedBrowserExecutableVersion(
   exePath: string,
   resolver: (path: string) => string | null = getBrowserExecutableVersion,
+  cacheScope = "default",
 ): string | null {
+  let real: string;
   try {
-    const st = fs.statSync(exePath);
-    const cached = executableVersionCache.get(exePath);
-    if (
-      cached &&
-      cached.mtimeMs === st.mtimeMs &&
-      cached.ctimeMs === st.ctimeMs &&
-      cached.size === st.size &&
-      cached.ino === st.ino &&
-      cached.dev === st.dev
-    ) {
-      // Authoritative content identity proof: verify cryptographic content hash matches
-      const currentHash = computeExecutableHash(exePath);
-      if (currentHash && currentHash === cached.contentHash) {
-        return cached.version;
-      }
-    }
-    const contentHash = computeExecutableHash(exePath);
-    const version = resolver(exePath);
-    if (contentHash) {
-      executableVersionCache.set(exePath, {
-        mtimeMs: st.mtimeMs,
-        ctimeMs: st.ctimeMs,
-        size: st.size,
-        ino: st.ino,
-        dev: st.dev,
-        contentHash,
-        version,
-      });
-    }
-    return version;
+    real = fs.realpathSync(exePath);
   } catch {
     return resolver(exePath);
   }
+  // A link whose target has another name is a multiplexing launcher such as snap: its identity
+  // says nothing about which app or revision runs, so it is never cached.
+  if (path.basename(real) !== path.basename(exePath)) return resolver(exePath);
+  const plistPath = process.platform === "darwin" ? bundleInfoPlistPath(real) : null;
+  const exe = statIdentity(real);
+  if (!exe) return resolver(exePath);
+  const plist = plistPath ? statIdentity(plistPath) : null;
+  const key = `${cacheScope}\u0000${real}`;
+  const cached = executableVersionCache.get(key);
+  if (cached && sameIdentity(cached.exe, exe) && sameIdentity(cached.plist, plist)) {
+    return cached.version;
+  }
+  const version = resolver(exePath);
+  executableVersionCache.set(key, { exe, plist, version });
+  return version;
+}
+
+function resolveCandidateVersion(
+  candidate: BrowserExecutable,
+  options?: FindExecutableOptions,
+): string | null {
+  if (options?.versionResolver) return options.versionResolver(candidate.path);
+  const allowBundleVersion = allowsBundleVersionProof(candidate.kind);
+  return getCachedBrowserExecutableVersion(
+    candidate.path,
+    (p) => getBrowserExecutableVersion(p, undefined, { allowBundleVersion }),
+    allowBundleVersion ? "bundle" : "cli",
+  );
 }
 
 function findFirstExecutable(
@@ -453,12 +491,11 @@ function findFirstExecutable(
   options?: FindExecutableOptions,
 ): BrowserExecutable | null {
   const minVersion = options?.minVersion ?? MIN_CHROMIUM_SECURITY_VERSION;
-  const resolver = options?.versionResolver ?? getCachedBrowserExecutableVersion;
   const enforce = options?.enforceSecurity ?? true;
 
   for (const candidate of candidates) {
     if (!exists(candidate.path)) continue;
-    const version = resolver(candidate.path);
+    const version = resolveCandidateVersion(candidate, options);
     if (version) {
       if (enforce && !isChromiumVersionAtLeast(version, minVersion)) {
         continue;
@@ -641,14 +678,16 @@ export function resolveBrowserExecutableForPlatform(
   options?: FindExecutableOptions,
 ): BrowserExecutable | null {
   const minVersion = options?.minVersion ?? MIN_CHROMIUM_SECURITY_VERSION;
-  const resolver = options?.versionResolver ?? getCachedBrowserExecutableVersion;
   const isHost = platform === process.platform;
 
   if (resolved.executablePath) {
     if (!exists(resolved.executablePath)) {
       throw new Error(`browser.executablePath not found: ${resolved.executablePath}`);
     }
-    const version = resolver(resolved.executablePath);
+    const version = resolveCandidateVersion(
+      { kind: "custom", path: resolved.executablePath },
+      options,
+    );
     if (version) {
       assertBrowserSecurityBaseline(
         version,
@@ -672,7 +711,7 @@ export function resolveBrowserExecutableForPlatform(
 
   const detected = detectDefaultChromiumExecutable(platform);
   if (detected) {
-    const version = resolver(detected.path);
+    const version = resolveCandidateVersion(detected, options);
     if (version) {
       if (isChromiumVersionAtLeast(version, minVersion)) {
         return { ...detected, version };

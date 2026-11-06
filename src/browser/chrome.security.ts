@@ -2,92 +2,65 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-export const MIN_CHROMIUM_SECURITY_VERSION = "156.0.8078.73";
+import { appendCdpPath, getHeadersWithAuth } from "./cdp.helpers.js";
+import {
+  CHROMIUM_SECURITY_CNA_RECORDS,
+  MIN_CHROMIUM_SECURITY_VERSION,
+  compareChromiumVersions,
+  isChromiumVersionAtLeast,
+  parseChromiumProductVersion,
+  parseChromiumVersion,
+} from "./chromium-version.js";
+
+export {
+  CHROMIUM_SECURITY_CNA_RECORDS,
+  MIN_CHROMIUM_SECURITY_VERSION,
+  compareChromiumVersions,
+  isChromiumVersionAtLeast,
+  parseChromiumProductVersion,
+  parseChromiumVersion,
+};
+
 export const PINNED_CFT_VERSION = "156.0.8078.80";
 export const PINNED_CFT_REVISION = "1706539";
 
-export const CHROMIUM_SECURITY_CVES = [
-  "CVE-2026-118306",
-  "CVE-2026-118331",
-  "CVE-2026-118348",
-  "CVE-2026-118344",
-] as const;
+const CNA_RECORDS_LABEL = `Chrome CNA records ${CHROMIUM_SECURITY_CNA_RECORDS.join("/")}`;
 
-export const CHROMIUM_SECURITY_CNA_RECORDS = ["118306", "118331", "118348", "118344"] as const;
+/** A browser or endpoint was positively refused by the security baseline. Never retry. */
+export class BrowserSecurityRefusalError extends Error {
+  override name = "BrowserSecurityRefusalError";
+}
+
+/** Version proof could not be obtained. Fails closed; transport-level retries are allowed. */
+export class BrowserSecurityProofUnavailableError extends Error {
+  override name = "BrowserSecurityProofUnavailableError";
+}
+
+export function isBrowserSecurityError(err: unknown): boolean {
+  return (
+    err instanceof BrowserSecurityRefusalError ||
+    err instanceof BrowserSecurityProofUnavailableError
+  );
+}
+
+/** Strips userinfo, query and fragment so tokens never reach error text or logs. */
+export function redactCdpUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    const hadSecret = Boolean(url.username || url.password || url.search || url.hash);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    const base = url.toString().replace(/\/$/, "");
+    return hadSecret ? `${base} [redacted]` : base;
+  } catch {
+    return "[unparseable CDP URL]";
+  }
+}
 
 export const CHROMIUM_SECURITY_ADVISORY =
   "https://chromereleases.googleblog.com/2026/10/stable-channel-update-for-desktop_0562499947.html";
-
-export function parseChromiumVersion(raw: string): [number, number, number, number] | null {
-  if (!raw || typeof raw !== "string") return null;
-
-  const trimmed = raw.trim();
-
-  // 1. Whole-string 4-quad numeric version: "156.0.8078.80" (from Info.plist, FileVersion, or explicit numeric contracts)
-  const wholeMatch = trimmed.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (wholeMatch) {
-    return [
-      Number.parseInt(wholeMatch[1], 10),
-      Number.parseInt(wholeMatch[2], 10),
-      Number.parseInt(wholeMatch[3], 10),
-      Number.parseInt(wholeMatch[4], 10),
-    ];
-  }
-
-  // 2. Explicit Chromium component: "Chromium: X.Y.Z.W", "Chromium/X.Y.Z.W", "Chromium X.Y.Z.W"
-  // E.g. Brave CLI `--version` output: "Brave Browser 1.75.175 Chromium: 133.0.6943.53",
-  // or extension relay: "Moltbot/extension-relay (Chromium 156.0.8078.80)"
-  const chromiumMatch = trimmed.match(/\bChromium[:\s/]+(\d+)\.(\d+)\.(\d+)\.(\d+)\b/i);
-  if (chromiumMatch) {
-    return [
-      Number.parseInt(chromiumMatch[1], 10),
-      Number.parseInt(chromiumMatch[2], 10),
-      Number.parseInt(chromiumMatch[3], 10),
-      Number.parseInt(chromiumMatch[4], 10),
-    ];
-  }
-
-  // 3. Recognized Chrome product banner / header:
-  // "Google Chrome 156.0.8078.80", "Chrome/156.0.8078.80", "HeadlessChrome/156.0.8078.80",
-  // or User-Agent containing Chrome/X.Y.Z.W
-  const chromeMatch = trimmed.match(
-    /\b(?:Google Chrome(?:\s+Canary)?\s+|(?:Headless)?Chrome\/)(\d+)\.(\d+)\.(\d+)\.(\d+)\b/i,
-  );
-  if (chromeMatch) {
-    return [
-      Number.parseInt(chromeMatch[1], 10),
-      Number.parseInt(chromeMatch[2], 10),
-      Number.parseInt(chromeMatch[3], 10),
-      Number.parseInt(chromeMatch[4], 10),
-    ];
-  }
-
-  return null;
-}
-
-export function compareChromiumVersions(a: string, b: string): number {
-  const partsA = parseChromiumVersion(a);
-  const partsB = parseChromiumVersion(b);
-  if (!partsA || !partsB) {
-    throw new Error(`Cannot compare invalid Chromium versions: "${a}" and "${b}"`);
-  }
-  for (let i = 0; i < 4; i += 1) {
-    if (partsA[i] > partsB[i]) return 1;
-    if (partsA[i] < partsB[i]) return -1;
-  }
-  return 0;
-}
-
-export function isChromiumVersionAtLeast(
-  version: string,
-  minimum = MIN_CHROMIUM_SECURITY_VERSION,
-): boolean {
-  try {
-    return compareChromiumVersions(version, minimum) >= 0;
-  } catch {
-    return false;
-  }
-}
 
 export function assertBrowserSecurityBaseline(
   version: string,
@@ -96,34 +69,55 @@ export function assertBrowserSecurityBaseline(
 ): void {
   if (!isChromiumVersionAtLeast(version, minimum)) {
     const ctxMsg = context ? ` for ${context}` : "";
-    throw new Error(
+    throw new BrowserSecurityRefusalError(
       `Refusing browser (version ${version})${ctxMsg}: version is below minimum security baseline ${minimum}. ` +
-        `Prior releases are vulnerable to ${CHROMIUM_SECURITY_CVES.join(", ")}. ` +
+        `Releases before ${minimum} are covered by ${CNA_RECORDS_LABEL}. ` +
         `See advisory: ${CHROMIUM_SECURITY_ADVISORY}. Update browser to ${minimum} or newer.`,
     );
   }
 }
 
-export function getBrowserExecutableVersion(exePath: string, timeoutMs = 1500): string | null {
+export type BrowserExecutableVersionOptions = {
+  /**
+   * Trust whole-quad bundle metadata (macOS Info.plist, Windows FileVersion). Only safe for
+   * Google Chrome/Chromium builds: derivatives (Brave, Edge) publish their own release numbers there.
+   */
+  allowBundleVersion?: boolean;
+};
+
+export function resolveWindowsPowerShellPath(env: NodeJS.ProcessEnv = process.env): string {
+  const systemRoot = env.SystemRoot?.trim() || env.windir?.trim() || "C:\\Windows";
+  return path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+export function getBrowserExecutableVersion(
+  exePath: string,
+  timeoutMs = 1500,
+  options: BrowserExecutableVersionOptions = {},
+): string | null {
+  const allowBundleVersion = options.allowBundleVersion ?? false;
   try {
     if (!fs.existsSync(exePath)) return null;
   } catch {
     return null;
   }
 
-  // 1. Try running `--version`
-  try {
-    const output = execFileSync(exePath, ["--version"], {
-      timeout: timeoutMs,
-      encoding: "utf8",
-      maxBuffer: 256 * 1024,
-      stdio: ["pipe", "pipe", "ignore"],
-    });
-    const parsed = parseChromiumVersion(String(output ?? ""));
-    if (parsed) return parsed.join(".");
-  } catch {
-    // ignore
-  }
+  // 1. `--version` (skipped on Windows, where chrome.exe launches or forwards to a GUI instance).
+  if (process.platform !== "win32")
+    try {
+      const output = execFileSync(exePath, ["--version"], {
+        timeout: timeoutMs,
+        encoding: "utf8",
+        maxBuffer: 256 * 1024,
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+      const parsed = parseChromiumProductVersion(String(output ?? ""));
+      if (parsed) return parsed.join(".");
+    } catch {
+      // ignore
+    }
+
+  if (!allowBundleVersion) return null;
 
   // 2. On macOS, try reading Info.plist if inside an .app bundle
   if (process.platform === "darwin" && exePath.includes(".app")) {
@@ -152,7 +146,7 @@ export function getBrowserExecutableVersion(exePath: string, timeoutMs = 1500): 
       const escaped = exePath.replace(/'/g, "''");
       const psCmd = `(Get-Item -LiteralPath '${escaped}').VersionInfo.FileVersion`;
       const output = execFileSync(
-        "powershell.exe",
+        resolveWindowsPowerShellPath(),
         ["-NoProfile", "-NonInteractive", "-Command", psCmd],
         {
           timeout: timeoutMs,
@@ -188,7 +182,7 @@ export function validateBrowserExecutableSecurity(
       valid: false,
       error:
         `Browser executable at "${exePath}" has version "${version}", which is below minimum security baseline ${minVersion}. ` +
-        `Vulnerable to ${CHROMIUM_SECURITY_CVES.join(", ")}. Update to ${minVersion} or newer.`,
+        `Releases before ${minVersion} are covered by ${CNA_RECORDS_LABEL}. Update to ${minVersion} or newer.`,
       version,
     };
   }
@@ -259,65 +253,99 @@ export function queryDarwinProcessSeatbeltState(pid: number): boolean {
   throw new Error(`Unexpected output from Seatbelt sandbox_check for PID ${pid}: "${output}"`);
 }
 
-const cdpSecurityCache = new Map<
-  string,
-  { version: string; isRelay?: boolean; checkedAt: number }
->();
+const cdpSecurityCache = new Map<string, { version: string; checkedAt: number }>();
 
 export function clearCdpSecurityCache(): void {
   cdpSecurityCache.clear();
 }
 
 /**
+ * Checks a `/json/version` `Browser` value and returns the verified version.
+ * `endpointLabel` must already be redacted.
+ */
+export function assertCdpBrowserProof(
+  browser: unknown,
+  label: string,
+  endpointLabel: string,
+): string {
+  if (typeof browser !== "string" || !browser) {
+    throw new BrowserSecurityProofUnavailableError(
+      `Refusing CDP connection for ${label}: failed to obtain /json/version proof from ${endpointLabel}. Version proof is required for security baseline.`,
+    );
+  }
+
+  if (/extension-relay/i.test(browser)) {
+    throw new BrowserSecurityRefusalError(
+      `Refusing CDP connection for ${label}: the extension relay does not yet support verifiable underlying browser version proof, so it cannot satisfy security baseline ${MIN_CHROMIUM_SECURITY_VERSION}.`,
+    );
+  }
+
+  const parsed = parseChromiumVersion(browser);
+  if (!parsed) {
+    throw new BrowserSecurityRefusalError(
+      `Refusing CDP connection for ${label}: unparseable Browser string from ${endpointLabel}. Version proof is required for security baseline.`,
+    );
+  }
+
+  const versionStr = parsed.join(".");
+  assertBrowserSecurityBaseline(versionStr, label);
+  return versionStr;
+}
+
+function buildCdpVersionRequest(cdpUrl: string): { url: string; headers: Record<string, string> } {
+  const headers = getHeadersWithAuth(cdpUrl);
+  const url = new URL(appendCdpPath(cdpUrl, "/json/version"));
+  // fetch() rejects URLs with embedded credentials; they travel as the Authorization header instead.
+  url.username = "";
+  url.password = "";
+  return { url: url.toString(), headers };
+}
+
+/**
  * Validates the security baseline of a CDP endpoint before connection.
  * Fails closed if the endpoint cannot be contacted, returns missing/unparseable version,
- * lacks verified underlying Chromium proof (e.g. extension relays),
+ * is an extension relay (which cannot prove its underlying browser version),
  * or if the reported version is below MIN_CHROMIUM_SECURITY_VERSION.
  */
 export async function assertCdpEndpointSecurity(
   cdpUrl: string,
   context?: string,
   timeoutMs = 2500,
-): Promise<{ version: string; isRelay: boolean }> {
+): Promise<{ version: string }> {
   const cached = cdpSecurityCache.get(cdpUrl);
   if (cached && Date.now() - cached.checkedAt < 10_000) {
-    return { version: cached.version, isRelay: Boolean(cached.isRelay) };
+    return { version: cached.version };
   }
 
-  const normalized = cdpUrl.replace(/\/$/, "");
-  const endpoint = `${normalized}/json/version`;
-  let cdpVersion: { Browser?: string } | null = null;
+  const label = context ?? `CDP endpoint at ${redactCdpUrl(cdpUrl)}`;
+  const safeEndpoint = redactCdpUrl(
+    (() => {
+      try {
+        return appendCdpPath(cdpUrl, "/json/version");
+      } catch {
+        return cdpUrl;
+      }
+    })(),
+  );
+
+  let browser: string | undefined;
   try {
-    const res = await fetch(endpoint, { signal: AbortSignal.timeout(timeoutMs) });
+    const req = buildCdpVersionRequest(cdpUrl);
+    const res = await fetch(req.url, {
+      headers: req.headers,
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     if (res.ok) {
-      cdpVersion = (await res.json()) as { Browser?: string };
+      const body = (await res.json()) as { Browser?: unknown };
+      if (typeof body?.Browser === "string") browser = body.Browser;
     }
   } catch {
-    cdpVersion = null;
+    browser = undefined;
   }
 
-  if (!cdpVersion?.Browser) {
-    throw new Error(
-      `Refusing CDP connection for ${context ?? cdpUrl}: failed to obtain /json/version proof from ${endpoint}. Version proof is required for security baseline.`,
-    );
-  }
+  const versionStr = assertCdpBrowserProof(browser, label, safeEndpoint);
 
-  const isRelay = /extension-relay/i.test(cdpVersion.Browser);
-  const parsed = parseChromiumVersion(cdpVersion.Browser);
-  if (!parsed) {
-    if (isRelay) {
-      throw new Error(
-        `Refusing CDP connection for ${context ?? cdpUrl}: extension relay at "${endpoint}" lacks verified underlying Chromium version proof. Underlying browser proof meeting baseline ${MIN_CHROMIUM_SECURITY_VERSION} is required.`,
-      );
-    }
-    throw new Error(
-      `Refusing CDP connection for ${context ?? cdpUrl}: unparseable Browser string "${cdpVersion.Browser}" from ${endpoint}.`,
-    );
-  }
-
-  const versionStr = parsed.join(".");
-  assertBrowserSecurityBaseline(versionStr, context ?? `CDP endpoint at ${cdpUrl}`);
-
-  cdpSecurityCache.set(cdpUrl, { version: versionStr, isRelay, checkedAt: Date.now() });
-  return { version: versionStr, isRelay };
+  cdpSecurityCache.set(cdpUrl, { version: versionStr, checkedAt: Date.now() });
+  return { version: versionStr };
 }

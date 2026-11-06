@@ -10,7 +10,7 @@ import { chromium } from "playwright-core";
 import { formatErrorMessage } from "../infra/errors.js";
 import { getHeadersWithAuth } from "./cdp.helpers.js";
 import { getChromeWebSocketUrl } from "./chrome.js";
-import { assertCdpEndpointSecurity } from "./chrome.security.js";
+import { assertCdpEndpointSecurity, BrowserSecurityRefusalError } from "./chrome.security.js";
 
 export type BrowserConsoleMessage = {
   type: string;
@@ -294,7 +294,7 @@ async function connectBrowser(cdpUrl: string): Promise<ConnectedBrowser> {
         const endpoint = wsUrl ?? normalized;
         const headers = getHeadersWithAuth(endpoint);
 
-        await assertCdpEndpointSecurity(normalized, `CDP endpoint at ${normalized}`, timeout);
+        await assertCdpEndpointSecurity(normalized, undefined, timeout);
 
         const browser = await chromium.connectOverCDP(endpoint, { timeout, headers });
         const connected: ConnectedBrowser = { browser, cdpUrl: normalized };
@@ -305,13 +305,8 @@ async function connectBrowser(cdpUrl: string): Promise<ConnectedBrowser> {
         });
         return connected;
       } catch (err) {
-        if (
-          err instanceof Error &&
-          (err.message.includes("security baseline") ||
-            err.message.includes("Refusing CDP connection"))
-        ) {
-          throw err;
-        }
+        // Proof-unavailable errors fall through to the retry and still fail closed after the last attempt.
+        if (err instanceof BrowserSecurityRefusalError) throw err;
         lastErr = err;
         const delay = 250 + attempt * 250;
         await new Promise((r) => setTimeout(r, delay));

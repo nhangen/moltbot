@@ -82,7 +82,6 @@ export type ChromeExtensionRelayServer = {
   baseUrl: string;
   cdpWsUrl: string;
   extensionConnected: () => boolean;
-  setUnderlyingBrowserVersion: (version: string | null) => void;
   stop: () => Promise<void>;
 };
 
@@ -152,7 +151,6 @@ const serversByPort = new Map<number, ChromeExtensionRelayServer>();
 
 export async function ensureChromeExtensionRelayServer(opts: {
   cdpUrl: string;
-  underlyingBrowserVersion?: string;
 }): Promise<ChromeExtensionRelayServer> {
   const info = parseBaseUrl(opts.cdpUrl);
   if (!isLoopbackHost(info.host)) {
@@ -160,14 +158,8 @@ export async function ensureChromeExtensionRelayServer(opts: {
   }
 
   const existing = serversByPort.get(info.port);
-  if (existing) {
-    if (opts.underlyingBrowserVersion !== undefined) {
-      existing.setUnderlyingBrowserVersion(opts.underlyingBrowserVersion ?? null);
-    }
-    return existing;
-  }
+  if (existing) return existing;
 
-  let underlyingVersion: string | null = opts.underlyingBrowserVersion ?? null;
   let extensionWs: WebSocket | null = null;
   const cdpClients = new Set<WebSocket>();
   const connectedTargets = new Map<string, ConnectedTarget>();
@@ -325,11 +317,8 @@ export async function ensureChromeExtensionRelayServer(opts: {
       (path === "/json/version" || path === "/json/version/") &&
       (req.method === "GET" || req.method === "PUT")
     ) {
-      const browserBanner = underlyingVersion
-        ? `Moltbot/extension-relay (Chromium ${underlyingVersion})`
-        : "Moltbot/extension-relay";
       const payload: Record<string, unknown> = {
-        Browser: browserBanner,
+        Browser: "Moltbot/extension-relay",
         "Protocol-Version": "1.3",
       };
       // Only advertise the WS URL if a real extension is connected.
@@ -647,9 +636,6 @@ export async function ensureChromeExtensionRelayServer(opts: {
     baseUrl,
     cdpWsUrl: `ws://${host}:${port}/cdp`,
     extensionConnected: () => Boolean(extensionWs),
-    setUnderlyingBrowserVersion: (version: string | null) => {
-      underlyingVersion = version;
-    },
     stop: async () => {
       serversByPort.delete(port);
       try {

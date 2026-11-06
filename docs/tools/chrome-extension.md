@@ -12,6 +12,8 @@ The Moltbot Chrome extension lets the agent control your **existing Chrome tabs*
 
 Attach/detach happens via a **single Chrome toolbar button**.
 
+**Not yet supported under the Chromium security baseline.** The relay cannot prove the version of the Chrome behind it, so Moltbot refuses relay connections. Use the managed `clawd` profile instead. See [Browser security](/tools/browser#security).
+
 ## What it is (concept)
 
 There are three parts:

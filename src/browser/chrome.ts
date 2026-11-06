@@ -16,7 +16,9 @@ import {
 import {
   MIN_CHROMIUM_SECURITY_VERSION,
   assertBrowserSecurityBaseline,
+  assertCdpBrowserProof,
   parseChromiumVersion,
+  redactCdpUrl,
 } from "./chrome.security.js";
 import {
   decorateClawdProfile,
@@ -44,9 +46,10 @@ export {
   MIN_CHROMIUM_SECURITY_VERSION,
   PINNED_CFT_VERSION,
   PINNED_CFT_REVISION,
-  CHROMIUM_SECURITY_CVES,
   CHROMIUM_SECURITY_CNA_RECORDS,
   CHROMIUM_SECURITY_ADVISORY,
+  BrowserSecurityProofUnavailableError,
+  BrowserSecurityRefusalError,
   assertBrowserSecurityBaseline,
   assertCdpEndpointSecurity,
   clearCdpSecurityCache,
@@ -311,34 +314,11 @@ export async function launchClawdChrome(
   }
 
   const cdpVersion = await fetchChromeVersion(profile.cdpUrl, 2000);
-  if (!cdpVersion?.Browser) {
-    try {
-      proc.kill("SIGKILL");
-    } catch {
-      // ignore
-    }
-    throw new Error(
-      `Refusing running browser for profile "${profile.name}": failed to obtain /json/version proof over CDP from ${profile.cdpUrl}.`,
-    );
-  }
-
-  const parsedRunning = parseChromiumVersion(cdpVersion.Browser);
-  if (!parsedRunning) {
-    try {
-      proc.kill("SIGKILL");
-    } catch {
-      // ignore
-    }
-    throw new Error(
-      `Refusing running browser for profile "${profile.name}": unparseable version string "${cdpVersion.Browser}" from ${profile.cdpUrl}.`,
-    );
-  }
-
-  const runningVerStr = parsedRunning.join(".");
   try {
-    assertBrowserSecurityBaseline(
-      runningVerStr,
+    assertCdpBrowserProof(
+      cdpVersion?.Browser,
       `running Chrome instance for profile "${profile.name}"`,
+      redactCdpUrl(appendCdpPath(profile.cdpUrl, "/json/version")),
     );
   } catch (err) {
     try {

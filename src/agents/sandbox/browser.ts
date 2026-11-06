@@ -5,7 +5,12 @@ import {
   DEFAULT_CLAWD_BROWSER_COLOR,
 } from "../../browser/constants.js";
 import { BROWSER_BRIDGES } from "./browser-bridges.js";
-import { DEFAULT_SANDBOX_BROWSER_IMAGE, SANDBOX_AGENT_WORKSPACE_MOUNT } from "./constants.js";
+import {
+  DEFAULT_SANDBOX_BROWSER_IMAGE,
+  SANDBOX_AGENT_WORKSPACE_MOUNT,
+  SANDBOX_BROWSER_SECURITY_LABEL,
+  SANDBOX_BROWSER_SECURITY_LABEL_VALUE,
+} from "./constants.js";
 import {
   buildSandboxCreateArgs,
   dockerContainerState,
@@ -66,13 +71,35 @@ function buildSandboxBrowserResolvedConfig(params: {
   };
 }
 
-async function ensureSandboxBrowserImage(image: string) {
-  const result = await execDocker(["image", "inspect", image], {
+const SECURITY_LABEL_FORMAT = `{{ index .Config.Labels "${SANDBOX_BROWSER_SECURITY_LABEL}" }}`;
+
+async function readSecurityLabel(inspectArgs: string[]): Promise<string | null> {
+  const result = await execDocker([...inspectArgs, "--format", SECURITY_LABEL_FORMAT], {
     allowFailure: true,
   });
-  if (result.code === 0) return;
+  if (result.code !== 0) return null;
+  return result.stdout.trim();
+}
+
+async function ensureSandboxBrowserImage(image: string) {
+  const label = await readSecurityLabel(["image", "inspect", image]);
+  if (label === null) {
+    throw new Error(
+      `Sandbox browser image not found: ${image}. Build it with scripts/sandbox-browser-setup.sh.`,
+    );
+  }
+  if (label !== SANDBOX_BROWSER_SECURITY_LABEL_VALUE) {
+    throw new Error(
+      `Sandbox browser image ${image} predates the sandboxed Chromium entrypoint (missing ${SANDBOX_BROWSER_SECURITY_LABEL}=${SANDBOX_BROWSER_SECURITY_LABEL_VALUE}). Rebuild it with scripts/sandbox-browser-setup.sh.`,
+    );
+  }
+}
+
+async function ensureSandboxBrowserContainerLabel(containerName: string) {
+  const label = await readSecurityLabel(["container", "inspect", containerName]);
+  if (label === SANDBOX_BROWSER_SECURITY_LABEL_VALUE) return;
   throw new Error(
-    `Sandbox browser image not found: ${image}. Build it with scripts/sandbox-browser-setup.sh.`,
+    `Sandbox browser container ${containerName} was created from an image without ${SANDBOX_BROWSER_SECURITY_LABEL}=${SANDBOX_BROWSER_SECURITY_LABEL_VALUE}. Remove it (docker rm -f ${containerName}) and rebuild the image with scripts/sandbox-browser-setup.sh.`,
   );
 }
 
@@ -122,8 +149,11 @@ export async function ensureSandboxBrowser(params: {
     args.push(params.cfg.browser.image);
     await execDocker(args);
     await execDocker(["start", containerName]);
-  } else if (!state.running) {
-    await execDocker(["start", containerName]);
+  } else {
+    await ensureSandboxBrowserContainerLabel(containerName);
+    if (!state.running) {
+      await execDocker(["start", containerName]);
+    }
   }
 
   const mappedCdp = await readDockerPort(containerName, params.cfg.browser.cdpPort);

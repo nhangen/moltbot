@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { BrowserServerState } from "./server-context.js";
+import { clearCdpSecurityCache } from "./chrome.security.js";
 import { createBrowserRouteContext } from "./server-context.js";
 
 vi.mock("./chrome.js", () => ({
@@ -14,6 +15,8 @@ vi.mock("./chrome.js", () => ({
 }));
 
 describe("browser server-context ensureTabAvailable", () => {
+  beforeEach(() => clearCdpSecurityCache());
+
   it("sticks to the last selected target when targetId is omitted", async () => {
     const fetchMock = vi.fn();
     // 1st call (snapshot): stable ordering A then B (twice)
@@ -39,6 +42,12 @@ describe("browser server-context ensureTabAvailable", () => {
 
     fetchMock.mockImplementation(async (url: unknown) => {
       const u = String(url);
+      if (u.includes("/json/version")) {
+        return {
+          ok: true,
+          json: async () => ({ Browser: "Chrome/156.0.8078.80" }),
+        } as unknown as Response;
+      }
       if (!u.includes("/json/list")) {
         throw new Error(`unexpected fetch: ${u}`);
       }
@@ -73,7 +82,6 @@ describe("browser server-context ensureTabAvailable", () => {
         defaultProfile: "chrome",
         profiles: {
           chrome: {
-            driver: "extension",
             cdpUrl: "http://127.0.0.1:18792",
             cdpPort: 18792,
             color: "#00AA00",
@@ -95,7 +103,7 @@ describe("browser server-context ensureTabAvailable", () => {
     expect(second.targetId).toBe("A");
   });
 
-  it("falls back to the only attached tab when an invalid targetId is provided (extension)", async () => {
+  it("refuses an extension relay profile before selecting a tab", async () => {
     const fetchMock = vi.fn();
     const responses = [
       [{ id: "A", type: "page", url: "https://a.example", webSocketDebuggerUrl: "ws://x/a" }],
@@ -104,6 +112,12 @@ describe("browser server-context ensureTabAvailable", () => {
 
     fetchMock.mockImplementation(async (url: unknown) => {
       const u = String(url);
+      if (u.includes("/json/version")) {
+        return {
+          ok: true,
+          json: async () => ({ Browser: "Moltbot/extension-relay" }),
+        } as unknown as Response;
+      }
       if (!u.includes("/json/list")) throw new Error(`unexpected fetch: ${u}`);
       const next = responses.shift();
       if (!next) throw new Error("no more responses");
@@ -143,15 +157,23 @@ describe("browser server-context ensureTabAvailable", () => {
 
     const ctx = createBrowserRouteContext({ getState: () => state });
     const chrome = ctx.forProfile("chrome");
-    const chosen = await chrome.ensureTabAvailable("NOT_A_TAB");
-    expect(chosen.targetId).toBe("A");
+    await expect(chrome.ensureTabAvailable("NOT_A_TAB")).rejects.toThrow(
+      /extension relay does not yet support verifiable/,
+    );
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/json/list"))).toBe(false);
   });
 
-  it("returns a descriptive message when no extension tabs are attached", async () => {
+  it("refuses an extension relay profile even when no tabs are attached", async () => {
     const fetchMock = vi.fn();
     const responses = [[]];
     fetchMock.mockImplementation(async (url: unknown) => {
       const u = String(url);
+      if (u.includes("/json/version")) {
+        return {
+          ok: true,
+          json: async () => ({ Browser: "Moltbot/extension-relay" }),
+        } as unknown as Response;
+      }
       if (!u.includes("/json/list")) throw new Error(`unexpected fetch: ${u}`);
       const next = responses.shift();
       if (!next) throw new Error("no more responses");
@@ -190,6 +212,8 @@ describe("browser server-context ensureTabAvailable", () => {
 
     const ctx = createBrowserRouteContext({ getState: () => state });
     const chrome = ctx.forProfile("chrome");
-    await expect(chrome.ensureTabAvailable()).rejects.toThrow(/no attached Chrome tabs/i);
+    await expect(chrome.ensureTabAvailable()).rejects.toThrow(
+      /extension relay does not yet support verifiable/,
+    );
   });
 });

@@ -1,5 +1,5 @@
 import { appendCdpPath, fetchJson, isLoopbackHost, withCdpSocket } from "./cdp.helpers.js";
-import { assertBrowserSecurityBaseline } from "./chrome.security.js";
+import { assertCdpBrowserProof, redactCdpUrl } from "./chrome.security.js";
 
 export { appendCdpPath, fetchJson, fetchOk, getHeadersWithAuth } from "./cdp.helpers.js";
 
@@ -85,9 +85,11 @@ export async function createTargetViaCdp(opts: {
     appendCdpPath(opts.cdpUrl, "/json/version"),
     1500,
   );
-  if (version?.Browser) {
-    assertBrowserSecurityBaseline(version.Browser, "CDP createTarget");
-  }
+  assertCdpBrowserProof(
+    version?.Browser,
+    "CDP createTarget",
+    redactCdpUrl(appendCdpPath(opts.cdpUrl, "/json/version")),
+  );
   const wsUrlRaw = String(version?.webSocketDebuggerUrl ?? "").trim();
   const wsUrl = wsUrlRaw ? normalizeCdpWsUrl(wsUrlRaw, opts.cdpUrl) : "";
   if (!wsUrl) throw new Error("CDP /json/version missing webSocketDebuggerUrl");

@@ -59,13 +59,16 @@ RUN set -eux; \
     ln -s "/opt/chrome-${CFT_PLATFORM}/chrome" /usr/local/bin/chromium; \
     ln -s "/opt/chrome-${CFT_PLATFORM}/chrome" /usr/local/bin/google-chrome; \
     chmod -R 755 "/opt/chrome-${CFT_PLATFORM}"; \
-    /usr/local/bin/chromium --version | grep -q "${CFT_VERSION}"
+    test "$(/usr/local/bin/chromium --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)" = "${CFT_VERSION}"
 
 # Run as non-root user to preserve sandboxing within the container
 RUN useradd -m -u 1000 -s /bin/bash moltbot
 
 COPY scripts/sandbox-browser-entrypoint.sh /usr/local/bin/moltbot-sandbox-browser
 RUN chmod +x /usr/local/bin/moltbot-sandbox-browser
+
+# Checked by the gateway before it creates or reuses a sandbox browser container.
+LABEL moltbot.sandbox-browser.security="sandboxed-v1"
 
 USER moltbot
 # Use /tmp/moltbot-home so container runs cleanly under default readOnlyRoot with tmpfs on /tmp

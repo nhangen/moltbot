@@ -1384,7 +1384,7 @@ Headless uses the **same Chromium engine** and works for most automation (forms,
 
 ### How do I use Brave for browser control
 
-Set `browser.executablePath` to your Brave binary (or any Chromium-based browser) and restart the Gateway.
+Moltbot won't launch Brave today. The Chromium security baseline needs proof of Chromium 156.0.8078.73 or newer, and Brave's `--version` reports its own release number, so an `executablePath` to Brave is refused. Use Google Chrome or Chromium instead. Attaching to an already-running Brave over CDP works only when its `/json/version` reports Chromium 156.0.8078.73 or newer.
 See the full config examples in [Browser](/tools/browser#use-brave-or-another-chromium-based-browser).
 
 ## Remote gateways + nodes
