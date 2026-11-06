@@ -14,6 +14,14 @@ import {
   resolveBrowserExecutableForPlatform,
 } from "./chrome.executables.js";
 import {
+  assertBrowserSandboxEnabled,
+  MIN_CHROMIUM_SECURITY_VERSION,
+  assertBrowserSecurityBaseline,
+  assertCdpBrowserProof,
+  parseChromiumVersion,
+  redactCdpUrl,
+} from "./chrome.security.js";
+import {
   decorateClawdProfile,
   ensureProfileCleanExit,
   isProfileDecorated,
@@ -35,6 +43,25 @@ export {
   ensureProfileCleanExit,
   isProfileDecorated,
 } from "./chrome.profile-decoration.js";
+export {
+  MIN_CHROMIUM_SECURITY_VERSION,
+  PINNED_CFT_VERSION,
+  PINNED_CFT_REVISION,
+  CHROMIUM_SECURITY_CNA_RECORDS,
+  CHROMIUM_SECURITY_ADVISORY,
+  BrowserSecurityProofUnavailableError,
+  BrowserSecurityRefusalError,
+  assertBrowserSecurityBaseline,
+  assertCdpEndpointSecurity,
+  clearCdpSecurityCache,
+  compareChromiumVersions,
+  getBrowserExecutableVersion,
+  isChromiumVersionAtLeast,
+  parseChromiumVersion,
+  validateBrowserExecutableSecurity,
+  assertProcessSandboxed,
+  queryDarwinProcessSeatbeltState,
+} from "./chrome.security.js";
 
 function exists(filePath: string) {
   try {
@@ -70,13 +97,16 @@ export async function isChromeReachable(cdpUrl: string, timeoutMs = 500): Promis
   return Boolean(version);
 }
 
-type ChromeVersion = {
+export type ChromeVersion = {
   webSocketDebuggerUrl?: string;
   Browser?: string;
   "User-Agent"?: string;
 };
 
-async function fetchChromeVersion(cdpUrl: string, timeoutMs = 500): Promise<ChromeVersion | null> {
+export async function fetchChromeVersion(
+  cdpUrl: string,
+  timeoutMs = 500,
+): Promise<ChromeVersion | null> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -154,6 +184,7 @@ export async function launchClawdChrome(
   resolved: ResolvedBrowserConfig,
   profile: ResolvedBrowserProfile,
 ): Promise<RunningChrome> {
+  assertBrowserSandboxEnabled(resolved.noSandbox);
   if (!profile.cdpIsLoopback) {
     throw new Error(`Profile "${profile.name}" is remote; cannot launch local Chrome.`);
   }
@@ -162,8 +193,11 @@ export async function launchClawdChrome(
   const exe = resolveBrowserExecutable(resolved);
   if (!exe) {
     throw new Error(
-      "No supported browser found (Chrome/Brave/Edge/Chromium on macOS, Linux, or Windows).",
+      `No supported secure browser found meeting security baseline ${MIN_CHROMIUM_SECURITY_VERSION} (Chrome/Brave/Edge/Chromium on macOS, Linux, or Windows).`,
     );
+  }
+  if (exe.version) {
+    assertBrowserSecurityBaseline(exe.version, `selected ${exe.kind} browser (${exe.path})`);
   }
 
   const userDataDir = resolveClawdUserDataDir(profile.name);
@@ -195,10 +229,6 @@ export async function launchClawdChrome(
       // Best-effort; older Chromes may ignore.
       args.push("--headless=new");
       args.push("--disable-gpu");
-    }
-    if (resolved.noSandbox) {
-      args.push("--no-sandbox");
-      args.push("--disable-setuid-sandbox");
     }
     if (process.platform === "linux") {
       args.push("--disable-dev-shm-usage");
@@ -279,6 +309,22 @@ export async function launchClawdChrome(
     throw new Error(
       `Failed to start Chrome CDP on port ${profile.cdpPort} for profile "${profile.name}".`,
     );
+  }
+
+  const cdpVersion = await fetchChromeVersion(profile.cdpUrl, 2000);
+  try {
+    assertCdpBrowserProof(
+      cdpVersion?.Browser,
+      `running Chrome instance for profile "${profile.name}"`,
+      redactCdpUrl(appendCdpPath(profile.cdpUrl, "/json/version")),
+    );
+  } catch (err) {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // ignore
+    }
+    throw err;
   }
 
   const pid = proc.pid ?? -1;

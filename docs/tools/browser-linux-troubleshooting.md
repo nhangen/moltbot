@@ -41,8 +41,7 @@ Then update your Moltbot config (`~/.clawdbot/moltbot.json`):
   "browser": {
     "enabled": true,
     "executablePath": "/usr/bin/google-chrome-stable",
-    "headless": true,
-    "noSandbox": true
+    "headless": true
   }
 }
 ```
@@ -57,15 +56,14 @@ If you must use snap Chromium, configure Moltbot to attach to a manually-started
   "browser": {
     "enabled": true,
     "attachOnly": true,
-    "headless": true,
-    "noSandbox": true
+    "headless": true
   }
 }
 ```
 
 2. Start Chromium manually:
 ```bash
-chromium-browser --headless --no-sandbox --disable-gpu \
+chromium-browser --headless --disable-gpu \
   --remote-debugging-port=18800 \
   --user-data-dir=$HOME/.clawdbot/browser/clawd/user-data \
   about:blank &
@@ -79,7 +77,7 @@ Description=Clawd Browser (Chrome CDP)
 After=network.target
 
 [Service]
-ExecStart=/snap/bin/chromium --headless --no-sandbox --disable-gpu --remote-debugging-port=18800 --user-data-dir=%h/.clawdbot/browser/clawd/user-data about:blank
+ExecStart=/snap/bin/chromium --headless --disable-gpu --remote-debugging-port=18800 --user-data-dir=%h/.clawdbot/browser/clawd/user-data about:blank
 Restart=on-failure
 RestartSec=5
 
@@ -88,6 +86,12 @@ WantedBy=default.target
 ```
 
 Enable with: `systemctl --user enable --now clawd-browser.service`
+
+### Chromium Sandbox Errors
+
+Moltbot doesn't run Chromium with `--no-sandbox`. If an error reports `browser.noSandbox`, remove that key from your config. Also remove `--no-sandbox` from any service that starts a browser you attach to.
+
+If Chromium can't start its sandbox, run it as a non-root user on a host or VM where the sandbox can start.
 
 ### Verifying the Browser Works
 
@@ -107,9 +111,9 @@ curl -s http://127.0.0.1:18791/tabs
 | Option | Description | Default |
 |--------|-------------|---------|
 | `browser.enabled` | Enable browser control | `true` |
-| `browser.executablePath` | Path to a Chromium-based browser binary (Chrome/Brave/Edge/Chromium) | auto-detected (prefers default browser when Chromium-based) |
+| `browser.executablePath` | Path to a Google Chrome or Chromium binary | auto-detected (prefers the default browser if it can prove its Chromium version) |
 | `browser.headless` | Run without GUI | `false` |
-| `browser.noSandbox` | Add `--no-sandbox` flag (needed for some Linux setups) | `false` |
+| `browser.noSandbox` | Unsupported. `true` refuses browser launch and attach | `false` |
 | `browser.attachOnly` | Don't launch browser, only attach to existing | `false` |
 | `browser.cdpPort` | Chrome DevTools Protocol port | `18800` |
 
