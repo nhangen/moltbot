@@ -10,13 +10,14 @@ describe("browser config", () => {
     expect(shouldStartLocalBrowserServer(resolved)).toBe(true);
     expect(resolved.cdpHost).toBe("127.0.0.1");
     expect(resolved.cdpProtocol).toBe("http");
-    const profile = resolveProfile(resolved, resolved.defaultProfile);
+    expect(resolved.defaultProfile).toBe("clawd");
+    const profile = resolveProfile(resolved, "chrome");
     expect(profile?.name).toBe("chrome");
     expect(profile?.driver).toBe("extension");
     expect(profile?.cdpPort).toBe(18792);
     expect(profile?.cdpUrl).toBe("http://127.0.0.1:18792");
 
-    const clawd = resolveProfile(resolved, "clawd");
+    const clawd = resolveProfile(resolved, resolved.defaultProfile);
     expect(clawd?.driver).toBe("clawd");
     expect(clawd?.cdpPort).toBe(18800);
     expect(clawd?.cdpUrl).toBe("http://127.0.0.1:18800");

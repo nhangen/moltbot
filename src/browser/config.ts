@@ -192,11 +192,7 @@ export function resolveBrowserConfig(
     controlPort,
   );
   const cdpProtocol = cdpInfo.parsed.protocol === "https:" ? "https" : "http";
-  const defaultProfile =
-    defaultProfileFromConfig ??
-    (profiles[DEFAULT_BROWSER_DEFAULT_PROFILE_NAME]
-      ? DEFAULT_BROWSER_DEFAULT_PROFILE_NAME
-      : DEFAULT_CLAWD_BROWSER_PROFILE_NAME);
+  const defaultProfile = defaultProfileFromConfig ?? DEFAULT_BROWSER_DEFAULT_PROFILE_NAME;
 
   return {
     enabled,

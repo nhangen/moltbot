@@ -51,7 +51,7 @@ The `chrome` relay profile is not yet supported under the Chromium security
 baseline: the relay cannot prove which browser version sits behind it, so
 Moltbot refuses it. Use `clawd` until relay version proof ships.
 
-Set `browser.defaultProfile: "clawd"` if you want managed mode by default.
+The default profile is `clawd` (managed mode).
 
 ## Configuration
 
@@ -64,7 +64,7 @@ Browser settings live in `~/.clawdbot/moltbot.json`.
     // cdpUrl: "http://127.0.0.1:18792", // legacy single-profile override
     remoteCdpTimeoutMs: 1500,         // remote CDP HTTP timeout (ms)
     remoteCdpHandshakeTimeoutMs: 3000, // remote CDP WebSocket handshake timeout (ms)
-    defaultProfile: "clawd",          // the built-in default `chrome` relay is refused
+    defaultProfile: "clawd",
     color: "#FF4500",
     headless: false,
     attachOnly: false,
@@ -88,7 +88,7 @@ Notes:
 - `remoteCdpHandshakeTimeoutMs` applies to remote CDP WebSocket reachability checks.
 - `attachOnly: true` means “never launch a local browser; only attach if it is already running.”
 - `color` + per-profile `color` tint the browser UI so you can see which profile is active.
-- The built-in default profile is `chrome` (extension relay), which the Chromium security baseline refuses. Set `defaultProfile: "clawd"` for the managed browser.
+- The built-in default profile is `clawd` (managed browser). The `chrome` extension relay profile is refused by the Chromium security baseline.
 - Auto-detect order: system default browser if it is Chrome, Chromium, or Chrome Canary with a provable version; otherwise Chrome → Brave → Edge → Chromium → Chrome Canary, skipping any build that cannot prove Chromium 156.0.8078.73 or newer.
 - Local `clawd` profiles auto-assign `cdpPort`/`cdpUrl` — set those only for remote CDP.
 

@@ -71,7 +71,7 @@ Status: beta.
 ### Breaking
 - **BREAKING:** Gateway auth mode "none" is removed; gateway now requires token/password (Tailscale Serve identity still allowed).
 - **BREAKING:** Browser: every CDP connection must prove Chromium 156.0.8078.73 or newer (Chrome CNA records 118306/118331/118348/118344). Older or unverifiable browsers are refused for launch, attach, and tab access.
-- **BREAKING:** Browser: the `chrome` extension-relay profile is refused until the relay can prove the underlying browser version. Use the `clawd` profile (`browser.defaultProfile: "clawd"`).
+- **BREAKING:** Browser: the `chrome` extension-relay profile is refused until the relay can prove the underlying browser version. The built-in default profile is now `clawd` (managed browser); set `browser.defaultProfile: "chrome"` only once relay version proof ships.
 - **BREAKING:** Browser: only Google Chrome, Chromium, and Chrome Canary are trusted for executable version proof. Opera (including Windows `launcher.exe`), Vivaldi, Yandex, Arc, and unrecognized browsers are refused. A custom `browser.executablePath` must print a `--version` that names Chrome or Chromium, which excludes Brave and Edge; every Windows custom path is refused for now.
 - **BREAKING:** Browser: `browser.noSandbox: true` now refuses launch and attach, and the sandbox browser image refuses to start when `CLAWDBOT_BROWSER_NO_SANDBOX` is set to anything other than `0`. Remove both settings.
 - **BREAKING:** Sandbox: browser images without the `moltbot.sandbox-browser.security=sandboxed-v1` label, and containers created from them, are refused. Rebuild with `scripts/sandbox-browser-setup.sh` and remove old `moltbot-sbx-browser-*` containers.
