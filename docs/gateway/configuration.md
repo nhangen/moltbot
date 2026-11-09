@@ -2774,7 +2774,7 @@ Defaults:
 - CDP URL: `http://127.0.0.1:18792` (control service + 1, legacy single-profile)
 - profile color: `#FF4500` (lobster-orange)
 - Note: the control server is started by the running gateway (Moltbot.app menubar, or `moltbot gateway`).
-- Auto-detect order: default browser if Chromium-based; otherwise Chrome → Brave → Edge → Chromium → Chrome Canary.
+- Auto-detect order: default browser if it can prove its Chromium version; otherwise Chrome → Chromium → Chrome Canary, skipping any build without version proof (Brave and Edge are always skipped).
 
 ```json5
 {
@@ -2782,7 +2782,7 @@ Defaults:
     enabled: true,
     evaluateEnabled: true,
     // cdpUrl: "http://127.0.0.1:18792", // legacy single-profile override
-    defaultProfile: "chrome",
+    defaultProfile: "clawd",
     profiles: {
       clawd: { cdpPort: 18800, color: "#FF4500" },
       work: { cdpPort: 18801, color: "#0066CC" },
@@ -2791,8 +2791,7 @@ Defaults:
     color: "#FF4500",
     // Advanced:
     // headless: false,
-    // noSandbox: false,
-    // executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    // executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     // attachOnly: false, // set true when tunneling a remote CDP to localhost
   }
 }

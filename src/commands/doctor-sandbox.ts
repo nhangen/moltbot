@@ -7,6 +7,10 @@ import {
   DEFAULT_SANDBOX_IMAGE,
   resolveSandboxScope,
 } from "../agents/sandbox.js";
+import {
+  SANDBOX_BROWSER_SECURITY_LABEL,
+  SANDBOX_BROWSER_SECURITY_LABEL_VALUE,
+} from "../agents/sandbox/constants.js";
 import type { MoltbotConfig } from "../config/config.js";
 import { runCommandWithTimeout, runExec } from "../process/exec.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -169,6 +173,41 @@ async function handleMissingSandboxImage(
   if (built) return;
 }
 
+async function handleStaleSandboxBrowserImage(
+  image: string,
+  runtime: RuntimeEnv,
+  prompter: DoctorPrompter,
+) {
+  let label: string;
+  try {
+    const result = await runExec(
+      "docker",
+      [
+        "image",
+        "inspect",
+        image,
+        "--format",
+        `{{ index .Config.Labels "${SANDBOX_BROWSER_SECURITY_LABEL}" }}`,
+      ],
+      { timeoutMs: 5_000 },
+    );
+    label = result.stdout.trim();
+  } catch {
+    return;
+  }
+  if (label === SANDBOX_BROWSER_SECURITY_LABEL_VALUE) return;
+
+  note(
+    `Sandbox browser image ${image} lacks ${SANDBOX_BROWSER_SECURITY_LABEL}=${SANDBOX_BROWSER_SECURITY_LABEL_VALUE}; Moltbot refuses to start it. Rebuild it with scripts/sandbox-browser-setup.sh.`,
+    "Sandbox",
+  );
+  const rebuild = await prompter.confirmSkipInNonInteractive({
+    message: "Rebuild the browser sandbox image now?",
+    initialValue: true,
+  });
+  if (rebuild) await runSandboxScript("scripts/sandbox-browser-setup.sh", runtime);
+}
+
 export async function maybeRepairSandboxImages(
   cfg: MoltbotConfig,
   runtime: RuntimeEnv,
@@ -221,6 +260,7 @@ export async function maybeRepairSandboxImages(
       runtime,
       prompter,
     );
+    await handleStaleSandboxBrowserImage(resolveSandboxBrowserImage(cfg), runtime, prompter);
   }
 
   if (changes.length > 0) {

@@ -92,6 +92,9 @@ jobs:
           - runtime: bun
             task: build
             command: bunx tsc -p tsconfig.json
+          - runtime: node
+            task: test-ui
+            command: pnpm test:ui
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -155,6 +158,40 @@ jobs:
           node -v
           pnpm -v
           pnpm install --frozen-lockfile --ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true || pnpm install --frozen-lockfile --ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true
+
+      # The UI suite refuses any browser below the Chromium security baseline, so it
+      # needs the same pinned Chrome for Testing build as Dockerfile.sandbox-browser.
+      # Ubuntu 24.04 restricts unprivileged user namespaces for binaries without an
+      # AppArmor profile, which Chromium's sandbox needs; this throwaway runner lifts it.
+      - name: Install pinned Chrome for Testing
+        if: matrix.task == 'test-ui'
+        env:
+          CFT_VERSION: 156.0.8078.80
+          CFT_SHA256: b711c720f774be355197f32edf37e0651418ba036d92446ee2da19ac017540a7
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${CFT_VERSION}/linux64/chrome-linux64.zip" -o "$RUNNER_TEMP/chrome.zip"
+          echo "${CFT_SHA256}  $RUNNER_TEMP/chrome.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/chrome.zip" -d "$RUNNER_TEMP"
+          sudo apt-get update
+          # deb.deps names Debian packages; Ubuntu 24.04 renamed several with a t64 suffix.
+          pkgs=()
+          while read -r dep; do
+            name="${dep%% *}"
+            name="${name%%|*}"
+            [ -n "$name" ] || continue
+            for candidate in "$name" "${name}t64" "${name/libcurl3-gnutls/libcurl3t64-gnutls}"; do
+              version="$(apt-cache policy "$candidate" 2>/dev/null | awk '/Candidate:/ {print $2}')"
+              if [ -n "$version" ] && [ "$version" != "(none)" ]; then
+                pkgs+=("$candidate")
+                break
+              fi
+            done
+          done < "$RUNNER_TEMP/chrome-linux64/deb.deps"
+          sudo apt-get install -y --no-install-recommends "${pkgs[@]}"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          "$RUNNER_TEMP/chrome-linux64/chrome" --version
+          echo "MOLTBOT_BROWSER_EXECUTABLE=$RUNNER_TEMP/chrome-linux64/chrome" >> "$GITHUB_ENV"
 
       - name: Run ${{ matrix.task }} (${{ matrix.runtime }})
         run: ${{ matrix.command }}

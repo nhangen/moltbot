@@ -1,4 +1,5 @@
 import { appendCdpPath, fetchJson, isLoopbackHost, withCdpSocket } from "./cdp.helpers.js";
+import { assertCdpBrowserProof, redactCdpUrl } from "./chrome.security.js";
 
 export { appendCdpPath, fetchJson, fetchOk, getHeadersWithAuth } from "./cdp.helpers.js";
 
@@ -80,9 +81,14 @@ export async function createTargetViaCdp(opts: {
   cdpUrl: string;
   url: string;
 }): Promise<{ targetId: string }> {
-  const version = await fetchJson<{ webSocketDebuggerUrl?: string }>(
+  const version = await fetchJson<{ webSocketDebuggerUrl?: string; Browser?: string }>(
     appendCdpPath(opts.cdpUrl, "/json/version"),
     1500,
+  );
+  assertCdpBrowserProof(
+    version?.Browser,
+    "CDP createTarget",
+    redactCdpUrl(appendCdpPath(opts.cdpUrl, "/json/version")),
   );
   const wsUrlRaw = String(version?.webSocketDebuggerUrl ?? "").trim();
   const wsUrl = wsUrlRaw ? normalizeCdpWsUrl(wsUrlRaw, opts.cdpUrl) : "";

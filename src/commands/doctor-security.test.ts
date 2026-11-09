@@ -69,3 +69,30 @@ describe("noteSecurityWarnings gateway exposure", () => {
     expect(message).not.toContain("Gateway bound");
   });
 });
+
+describe("noteSecurityWarnings browser", () => {
+  beforeEach(() => {
+    note.mockClear();
+  });
+
+  const lastMessage = () => String(note.mock.calls.at(-1)?.[0] ?? "");
+
+  it("warns that browser.noSandbox is refused", async () => {
+    await noteSecurityWarnings({ browser: { noSandbox: true } } as MoltbotConfig);
+    const message = lastMessage();
+    expect(message).toContain("browser.noSandbox");
+    expect(message).toContain("refuse");
+  });
+
+  it("warns when the default profile is the refused extension relay", async () => {
+    await noteSecurityWarnings({ browser: { defaultProfile: "chrome" } } as MoltbotConfig);
+    const message = lastMessage();
+    expect(message).toContain('browser.defaultProfile "chrome"');
+    expect(message).toContain("extension relay");
+  });
+
+  it("stays quiet about the browser on the default configuration", async () => {
+    await noteSecurityWarnings({} as MoltbotConfig);
+    expect(lastMessage()).not.toContain("browser.");
+  });
+});

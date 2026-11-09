@@ -8,7 +8,7 @@ read_when:
 
 # Browser (clawd-managed)
 
-Moltbot can run a **dedicated Chrome/Brave/Edge/Chromium profile** that the agent controls.
+Moltbot can run a **dedicated Chrome or Chromium profile** that the agent controls.
 It is isolated from your personal browser and is managed through a small local
 control service inside the Gateway (loopback only).
 
@@ -47,7 +47,11 @@ Gateway.
 - `chrome`: extension relay to your **system browser** (requires the Moltbot
   extension to be attached to a tab).
 
-Set `browser.defaultProfile: "clawd"` if you want managed mode by default.
+The `chrome` relay profile is not yet supported under the Chromium security
+baseline: the relay cannot prove which browser version sits behind it, so
+Moltbot refuses it. Use `clawd` until relay version proof ships.
+
+The default profile is `clawd` (managed mode).
 
 ## Configuration
 
@@ -60,12 +64,11 @@ Browser settings live in `~/.clawdbot/moltbot.json`.
     // cdpUrl: "http://127.0.0.1:18792", // legacy single-profile override
     remoteCdpTimeoutMs: 1500,         // remote CDP HTTP timeout (ms)
     remoteCdpHandshakeTimeoutMs: 3000, // remote CDP WebSocket handshake timeout (ms)
-    defaultProfile: "chrome",
+    defaultProfile: "clawd",
     color: "#FF4500",
     headless: false,
-    noSandbox: false,
     attachOnly: false,
-    executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     profiles: {
       clawd: { cdpPort: 18800, color: "#FF4500" },
       work: { cdpPort: 18801, color: "#0066CC" },
@@ -85,15 +88,22 @@ Notes:
 - `remoteCdpHandshakeTimeoutMs` applies to remote CDP WebSocket reachability checks.
 - `attachOnly: true` means “never launch a local browser; only attach if it is already running.”
 - `color` + per-profile `color` tint the browser UI so you can see which profile is active.
-- Default profile is `chrome` (extension relay). Use `defaultProfile: "clawd"` for the managed browser.
-- Auto-detect order: system default browser if Chromium-based; otherwise Chrome → Brave → Edge → Chromium → Chrome Canary.
+- The built-in default profile is `clawd` (managed browser). The `chrome` extension relay profile is refused by the Chromium security baseline.
+- Auto-detect order: system default browser if it is Chrome, Chromium, or Chrome Canary with a provable version; otherwise Chrome → Chromium → Chrome Canary, skipping any build that cannot prove Chromium 156.0.8078.73 or newer. Brave and Edge are still detected but always skipped, because they can't prove their Chromium version.
 - Local `clawd` profiles auto-assign `cdpPort`/`cdpUrl` — set those only for remote CDP.
 
-## Use Brave (or another Chromium-based browser)
+## Choose a specific browser
 
-If your **system default** browser is Chromium-based (Chrome/Brave/Edge/etc),
-Moltbot uses it automatically. Set `browser.executablePath` to override
-auto-detection:
+Moltbot only uses a browser that proves Chromium 156.0.8078.73 or newer. Set
+`browser.executablePath` to pick a specific binary; its `--version` output must
+name Chrome or Chromium (for example `Google Chrome 156.0.8078.80`).
+
+Brave and Edge print their own release numbers from `--version`, and Opera,
+Vivaldi, Yandex, and Arc never get executable version proof, so an explicit
+`executablePath` to those browsers is refused. On Windows every explicit `executablePath` is refused
+for now. Use Google Chrome or Chromium. Attaching to an already-running browser over CDP
+(`attachOnly` or a remote `cdpUrl`) is checked separately: its `/json/version` must report
+Chromium 156.0.8078.73 or newer.
 
 CLI example:
 
@@ -105,21 +115,14 @@ moltbot config set browser.executablePath "/usr/bin/google-chrome"
 // macOS
 {
   browser: {
-    executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
-  }
-}
-
-// Windows
-{
-  browser: {
-    executablePath: "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
+    executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
   }
 }
 
 // Linux
 {
   browser: {
-    executablePath: "/usr/bin/brave-browser"
+    executablePath: "/usr/bin/chromium"
   }
 }
 ```
@@ -187,6 +190,14 @@ Key ideas:
 - Keep the Gateway and any node hosts on a private network (Tailscale); avoid public exposure.
 - Treat remote CDP URLs/tokens as secrets; prefer env vars or a secrets manager.
 
+Chromium security baseline:
+- Every CDP endpoint (managed, attached, remote, or sandboxed) must report Chromium 156.0.8078.73 or newer in `/json/version`. Older, unparseable, or missing versions are refused before Moltbot attaches, opens, lists, focuses, or closes tabs. For a browser Moltbot launches, the executable's version is checked before launch and the CDP version right after launch, before any tab is used.
+- Only Google Chrome, Chromium, and Chrome Canary builds get bundle (`Info.plist`/FileVersion) version proof. `--version` output must name Chrome or Chromium; a bare version number is refused. Opera, Vivaldi, Yandex, Arc, and unrecognized browsers never get executable version proof, so Moltbot won't launch them; attaching to one over CDP still works when its `/json/version` reports Chromium 156.0.8078.73 or newer.
+- Moltbot has no `--no-sandbox` option. When `browser.noSandbox` is `true`, Moltbot refuses to launch or attach to a browser. The sandbox browser image refuses to start when `CLAWDBOT_BROWSER_NO_SANDBOX` is set to anything other than `0`.
+- Moltbot can't verify that a browser's sandbox is active, whether Moltbot launched it or you started it. Start any browser you attach to over CDP without `--no-sandbox`.
+- The sandbox browser container runs with all capabilities dropped and `no-new-privileges`. Chromium can start its namespace sandbox there because Moltbot applies a bundled seccomp profile (`assets/sandbox-browser-seccomp.json`): Docker's default profile plus `chroot`, and `clone`/`unshare` limited to new user, PID, and network namespaces. The trade-off: code running in the container can create a user and network namespace, which exposes more kernel surface (netfilter, netlink, raw sockets) than Docker's default allows. Without this, Chromium runs with no sandbox at all. `sandbox.docker.seccompProfile` applies to both the exec and browser containers; setting it replaces the bundled profile for the browser too, and it must allow those calls or Chromium exits with "No usable sandbox". Hosts that restrict unprivileged user namespaces through AppArmor (Ubuntu 23.10 and newer, `kernel.apparmor_restrict_unprivileged_userns=1`) may still refuse the sandbox; the entrypoint then exits with an error instead of running Chromium unsandboxed. This has been verified on Docker Desktop (Linux VM, arm64) only.
+- Sandbox browser images must carry the `moltbot.sandbox-browser.security=sandboxed-v2` label. Rebuild older images with `scripts/sandbox-browser-setup.sh` and remove containers created from them.
+
 Remote CDP tips:
 - Prefer HTTPS endpoints and short-lived tokens where possible.
 - Avoid embedding long-lived tokens directly in config files.
@@ -207,6 +218,8 @@ Defaults:
 All control endpoints accept `?profile=<name>`; the CLI uses `--browser-profile`.
 
 ## Chrome extension relay (use your existing Chrome)
+
+The extension relay is currently refused: it can't prove the version of the browser behind it, so the `chrome` profile and any `driver: "extension"` profile fail closed. The default profile is `clawd`. The rest of this section describes the relay for when that proof exists.
 
 Moltbot can also drive **your existing Chrome tabs** (no separate “clawd” Chrome instance) via a local CDP relay + a Chrome extension.
 
@@ -267,17 +280,15 @@ Notes:
 
 When launching locally, Moltbot picks the first available:
 1. Chrome
-2. Brave
-3. Edge
-4. Chromium
-5. Chrome Canary
+2. Chromium
+3. Chrome Canary
 
-You can override with `browser.executablePath`.
+Brave and Edge are detected but always skipped. Builds that cannot prove Chromium 156.0.8078.73 or newer are skipped. You can override with `browser.executablePath`.
 
 Platforms:
 - macOS: checks `/Applications` and `~/Applications`.
 - Linux: looks for `google-chrome`, `brave`, `microsoft-edge`, `chromium`, etc.
-- Windows: checks common install locations.
+- Windows: uses the default browser only when it is Chrome, Chromium, or Chrome Canary at its standard install location, then checks common install locations.
 
 ## Control API (optional)
 

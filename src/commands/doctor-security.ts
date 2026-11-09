@@ -7,6 +7,33 @@ import { note } from "../terminal/note.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import { resolveGatewayAuth } from "../gateway/auth.js";
 import { isLoopbackHost, resolveGatewayBindHost } from "../gateway/net.js";
+import { resolveBrowserConfig } from "../browser/config.js";
+
+function collectBrowserSecurityWarnings(cfg: MoltbotConfig): string[] {
+  const warnings: string[] = [];
+  if (cfg.browser?.noSandbox === true) {
+    warnings.push(
+      "- browser.noSandbox is true: Moltbot now refuses to launch Chromium without its sandbox.",
+      `  Fix: ${formatCliCommand("moltbot config set browser.noSandbox false")}`,
+    );
+  }
+  let defaultProfile: string | undefined;
+  let driver: string | undefined;
+  try {
+    const resolved = resolveBrowserConfig(cfg.browser, cfg);
+    defaultProfile = resolved.defaultProfile;
+    driver = resolved.profiles[defaultProfile]?.driver;
+  } catch {
+    return warnings;
+  }
+  if (driver === "extension") {
+    warnings.push(
+      `- browser.defaultProfile "${defaultProfile}" uses the Chrome extension relay, which Moltbot now refuses.`,
+      `  Fix: ${formatCliCommand("moltbot config set browser.defaultProfile clawd")}`,
+    );
+  }
+  return warnings;
+}
 
 export async function noteSecurityWarnings(cfg: MoltbotConfig) {
   const warnings: string[] = [];
@@ -71,6 +98,8 @@ export async function noteSecurityWarnings(cfg: MoltbotConfig) {
       );
     }
   }
+
+  warnings.push(...collectBrowserSecurityWarnings(cfg));
 
   const warnDmPolicy = async (params: {
     label: string;

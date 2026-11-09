@@ -70,8 +70,15 @@ Status: beta.
 
 ### Breaking
 - **BREAKING:** Gateway auth mode "none" is removed; gateway now requires token/password (Tailscale Serve identity still allowed).
+- **BREAKING:** Browser: every CDP connection must prove Chromium 156.0.8078.73 or newer (Chrome CNA records 118306/118331/118348/118344). Older or unverifiable browsers are refused for launch, attach, and tab access.
+- **BREAKING:** Browser: the `chrome` extension-relay profile is refused until the relay can prove the underlying browser version. The built-in default profile is now `clawd` (managed browser); set `browser.defaultProfile: "chrome"` only once relay version proof ships.
+- **BREAKING:** Browser: only Google Chrome, Chromium, and Chrome Canary are trusted for executable version proof. Opera (including Windows `launcher.exe`), Vivaldi, Yandex, Arc, and unrecognized browsers are refused. A custom `browser.executablePath` must print a `--version` that names Chrome or Chromium, which excludes Brave and Edge; every Windows custom path is refused for now.
+- **BREAKING:** Browser: `browser.noSandbox: true` now refuses launch and attach, and the sandbox browser image refuses to start when `CLAWDBOT_BROWSER_NO_SANDBOX` is set to anything other than `0`. Remove both settings.
+- **BREAKING:** Sandbox: browser images without the `moltbot.sandbox-browser.security=sandboxed-v2` label, and containers created from them, are refused. Rebuild with `scripts/sandbox-browser-setup.sh` and remove old `moltbot-sbx-browser-*` containers.
 
 ### Fixes
+- Sandbox: the browser image now installs the libraries Chrome for Testing needs, and the browser container applies a bundled seccomp profile (Docker's default plus user, PID, and network namespace creation) so Chromium can start its sandbox with all capabilities dropped. The entrypoint exits when Chromium dies before exposing CDP or stays silent for 30 seconds, instead of hanging.
+- Browser: Windows default-browser detection now works, and trusts only Chrome, Chromium, and Chrome Canary at their standard install locations.
 - Discord: restore username directory lookup in target resolution. (#3131) Thanks @bonald.
 - Agents: align MiniMax base URL test expectation with default provider config. (#3131) Thanks @bonald.
 - Agents: prevent retries on oversized image errors and surface size limits. (#2871) Thanks @Suksham-sharma.

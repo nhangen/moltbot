@@ -33,7 +33,13 @@ describe("browser default executable detection", () => {
         return "/Applications/Google Chrome.app";
       }
       if (cmd === "/usr/bin/defaults") {
+        if (argsStr.includes("CFBundleShortVersionString")) {
+          return "156.0.8078.80";
+        }
         return "Google Chrome";
+      }
+      if (argsStr.includes("--version")) {
+        return "Google Chrome 156.0.8078.80";
       }
       return "";
     });
@@ -60,6 +66,12 @@ describe("browser default executable detection", () => {
         return JSON.stringify([
           { LSHandlerURLScheme: "http", LSHandlerRoleAll: "com.apple.Safari" },
         ]);
+      }
+      if (cmd === "/usr/bin/defaults" && argsStr.includes("CFBundleShortVersionString")) {
+        return "156.0.8078.80";
+      }
+      if (argsStr.includes("--version")) {
+        return "Google Chrome 156.0.8078.80";
       }
       return "";
     });

@@ -81,10 +81,10 @@ describe("createMoltbotCodingTools", () => {
     expect(schema.type).toBe("object");
     expect(schema.anyOf).toBeUndefined();
   });
-  it("mentions Chrome extension relay in browser tool description", () => {
+  it("tells the agent the Chrome extension relay is refused instead of steering it there", () => {
     const browser = createBrowserTool();
-    expect(browser.description).toMatch(/Chrome extension/i);
-    expect(browser.description).toMatch(/profile="chrome"/i);
+    expect(browser.description).toMatch(/Chrome extension relay \(profile="chrome"\) is currently refused/);
+    expect(browser.description).not.toMatch(/ALWAYS use profile="chrome"/);
   });
   it("keeps browser tool schema properties after normalization", () => {
     const browser = defaultTools.find((tool) => tool.name === "browser");

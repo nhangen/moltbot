@@ -28,11 +28,11 @@ export type BrowserConfig = {
   executablePath?: string;
   /** Start Chrome headless (best-effort). Default: false */
   headless?: boolean;
-  /** Pass --no-sandbox to Chrome (Linux containers). Default: false */
+  /** Unsupported: `true` refuses browser use. Kept so existing configs still parse. */
   noSandbox?: boolean;
   /** If true: never launch; only attach to an existing browser. Default: false */
   attachOnly?: boolean;
-  /** Default profile to use when profile param is omitted. Default: "chrome" */
+  /** Default profile to use when profile param is omitted. Default: "clawd" */
   defaultProfile?: string;
   /** Named browser profiles with explicit CDP ports or URLs. */
   profiles?: Record<string, BrowserProfileConfig>;

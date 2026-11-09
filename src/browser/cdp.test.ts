@@ -49,6 +49,7 @@ describe("cdp", () => {
         res.setHeader("content-type", "application/json");
         res.end(
           JSON.stringify({
+            Browser: "Chrome/156.0.8078.80",
             webSocketDebuggerUrl: `ws://127.0.0.1:${wsPort}/devtools/browser/TEST`,
           }),
         );
@@ -67,6 +68,41 @@ describe("cdp", () => {
     });
 
     expect(created.targetId).toBe("TARGET_123");
+  });
+
+  it.each([
+    ["a missing Browser field", {}],
+    ["a below-baseline Browser", { Browser: "Chrome/145.0.7632.6" }],
+  ])("refuses to create a target for %s without opening the websocket", async (_label, extra) => {
+    wsServer = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise<void>((resolve) => wsServer?.once("listening", resolve));
+    const wsPort = (wsServer.address() as { port: number }).port;
+    let connections = 0;
+    wsServer.on("connection", () => {
+      connections += 1;
+    });
+
+    httpServer = createServer((req, res) => {
+      if (req.url === "/json/version") {
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify({
+            ...extra,
+            webSocketDebuggerUrl: `ws://127.0.0.1:${wsPort}/devtools/browser/TEST`,
+          }),
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end("not found");
+    });
+    await new Promise<void>((resolve) => httpServer?.listen(0, "127.0.0.1", resolve));
+    const httpPort = (httpServer.address() as { port: number }).port;
+
+    await expect(
+      createTargetViaCdp({ cdpUrl: `http://127.0.0.1:${httpPort}`, url: "https://example.com" }),
+    ).rejects.toThrowError(/CDP createTarget/);
+    expect(connections).toBe(0);
   });
 
   it("evaluates javascript via CDP", async () => {

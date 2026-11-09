@@ -4,10 +4,18 @@ import os from "node:os";
 import path from "node:path";
 
 import type { ResolvedBrowserConfig } from "./config.js";
+import {
+  MIN_CHROMIUM_SECURITY_VERSION,
+  assertBrowserSecurityBaseline,
+  getBrowserExecutableVersion,
+  isChromiumVersionAtLeast,
+  resolveWindowsRegPath,
+} from "./chrome.security.js";
 
 export type BrowserExecutable = {
-  kind: "brave" | "canary" | "chromium" | "chrome" | "custom" | "edge";
+  kind: "brave" | "canary" | "chromium" | "chrome" | "custom" | "edge" | "fork";
   path: string;
+  version?: string;
 };
 
 const CHROMIUM_BUNDLE_IDS = new Set([
@@ -113,32 +121,50 @@ function execText(
   }
 }
 
+const BUNDLE_ID_KINDS: Readonly<Record<string, BrowserExecutable["kind"]>> = {
+  "com.google.Chrome": "chrome",
+  "com.google.Chrome.beta": "chrome",
+  "com.google.Chrome.dev": "chrome",
+  "com.google.Chrome.canary": "canary",
+  "com.brave.Browser": "brave",
+  "com.brave.Browser.beta": "brave",
+  "com.brave.Browser.nightly": "brave",
+  "com.microsoft.Edge": "edge",
+  "com.microsoft.EdgeBeta": "edge",
+  "com.microsoft.EdgeDev": "edge",
+  "com.microsoft.EdgeCanary": "edge",
+  "org.chromium.Chromium": "chromium",
+};
+
+// Anything not listed (Vivaldi, Yandex, Arc, unknown names) is a fork: its vendor
+// version number is never Chromium proof.
+const EXECUTABLE_NAME_KINDS: Readonly<Record<string, BrowserExecutable["kind"]>> = {
+  "google chrome": "chrome",
+  "google chrome canary": "canary",
+  "brave browser": "brave",
+  "microsoft edge": "edge",
+  chromium: "chromium",
+  chrome: "chrome",
+  brave: "brave",
+  msedge: "edge",
+  "brave-browser": "brave",
+  "google-chrome": "chrome",
+  "google-chrome-stable": "chrome",
+  "google-chrome-beta": "chrome",
+  "google-chrome-unstable": "chrome",
+  "microsoft-edge": "edge",
+  "microsoft-edge-beta": "edge",
+  "microsoft-edge-dev": "edge",
+  "microsoft-edge-canary": "edge",
+  "chromium-browser": "chromium",
+};
+
 function inferKindFromIdentifier(identifier: string): BrowserExecutable["kind"] {
-  const id = identifier.toLowerCase();
-  if (id.includes("brave")) return "brave";
-  if (id.includes("edge")) return "edge";
-  if (id.includes("chromium")) return "chromium";
-  if (id.includes("canary")) return "canary";
-  if (
-    id.includes("opera") ||
-    id.includes("vivaldi") ||
-    id.includes("yandex") ||
-    id.includes("thebrowser")
-  ) {
-    return "chromium";
-  }
-  return "chrome";
+  return BUNDLE_ID_KINDS[identifier] ?? "fork";
 }
 
 function inferKindFromExecutableName(name: string): BrowserExecutable["kind"] {
-  const lower = name.toLowerCase();
-  if (lower.includes("brave")) return "brave";
-  if (lower.includes("edge") || lower.includes("msedge")) return "edge";
-  if (lower.includes("chromium")) return "chromium";
-  if (lower.includes("canary") || lower.includes("sxs")) return "canary";
-  if (lower.includes("opera") || lower.includes("vivaldi") || lower.includes("yandex"))
-    return "chromium";
-  return "chrome";
+  return EXECUTABLE_NAME_KINDS[name.toLowerCase()] ?? "fork";
 }
 
 function detectDefaultChromiumExecutable(platform: NodeJS.Platform): BrowserExecutable | null {
@@ -239,7 +265,22 @@ function detectDefaultChromiumExecutableWindows(): BrowserExecutable | null {
   if (!exists(exePath)) return null;
   const exeName = path.win32.basename(exePath).toLowerCase();
   if (!CHROMIUM_EXE_NAMES.has(exeName)) return null;
-  return { kind: inferKindFromExecutableName(exeName), path: exePath };
+  return { kind: inferWindowsInstalledKind(exePath), path: exePath };
+}
+
+function normalizeWindowsPath(value: string): string {
+  return path.win32.normalize(value).toLowerCase();
+}
+
+// A chrome.exe outside the vendor install locations earns no trust from its name, because
+// FileVersion is forgeable. The per-user %LOCALAPPDATA% locations are user-writable too, so
+// this narrows trust to where installers put Chrome; it does not defend against a local user.
+function inferWindowsInstalledKind(exePath: string): BrowserExecutable["kind"] {
+  const target = normalizeWindowsPath(exePath);
+  const installed = windowsBrowserCandidates().find(
+    (candidate) => normalizeWindowsPath(candidate.path) === target,
+  );
+  return installed?.kind ?? "fork";
 }
 
 function findDesktopFilePath(desktopId: string): string | null {
@@ -320,7 +361,7 @@ function resolveLinuxExecutablePath(command: string): string | null {
 }
 
 function readWindowsProgId(): string | null {
-  const output = execText("reg", [
+  const output = execText(resolveWindowsRegPath(), [
     "query",
     "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice",
     "/v",
@@ -336,7 +377,7 @@ function readWindowsCommandForProgId(progId: string): string | null {
     progId === "http"
       ? "HKCR\\http\\shell\\open\\command"
       : `HKCR\\${progId}\\shell\\open\\command`;
-  const output = execText("reg", ["query", key, "/ve"]);
+  const output = execText(resolveWindowsRegPath(), ["query", key, "/ve"]);
   if (!output) return null;
   const match = output.match(/REG_\w+\s+(.+)$/im);
   return match?.[1]?.trim() || null;
@@ -350,22 +391,147 @@ function expandWindowsEnvVars(value: string): string {
 }
 
 function extractWindowsExecutablePath(command: string): string | null {
-  const quoted = command.match(/"([^"]+\\.exe)"/i);
+  const trimmed = command.trim();
+  const quoted = trimmed.match(/^"([A-Za-z]:\\[^"]+\.exe)"/i);
   if (quoted?.[1]) return quoted[1];
-  const unquoted = command.match(/([^\\s]+\\.exe)/i);
+  const unquoted = trimmed.match(/^([A-Za-z]:\\[^"]*?\.exe)(?=\s|$)/i);
   if (unquoted?.[1]) return unquoted[1];
   return null;
 }
 
-function findFirstExecutable(candidates: Array<BrowserExecutable>): BrowserExecutable | null {
+export type FindExecutableOptions = {
+  minVersion?: string;
+  versionResolver?: (path: string) => string | null;
+  enforceSecurity?: boolean;
+  allowInsecureTestOnly?: boolean;
+};
+
+type StatIdentity = { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number };
+
+function statIdentity(target: string): StatIdentity | null {
+  try {
+    const st = fs.statSync(target);
+    return { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
+  } catch {
+    return null;
+  }
+}
+
+function sameIdentity(a: StatIdentity | null, b: StatIdentity | null): boolean {
+  if (!a || !b) return a === b;
+  return (
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeMs === b.mtimeMs &&
+    a.ctimeMs === b.ctimeMs
+  );
+}
+
+function bundleInfoPlistPath(exePath: string): string | null {
+  const idx = exePath.indexOf(".app/");
+  if (idx < 0) return null;
+  return path.join(exePath.slice(0, idx + 4), "Contents", "Info.plist");
+}
+
+const BUNDLE_VERSION_KINDS: ReadonlySet<BrowserExecutable["kind"]> = new Set([
+  "chrome",
+  "chromium",
+  "canary",
+]);
+
+export function allowsBundleVersionProof(kind: BrowserExecutable["kind"]): boolean {
+  return BUNDLE_VERSION_KINDS.has(kind);
+}
+
+// A failed probe can be a cold-start timeout (snap often exceeds the probe limit), so it is
+// retried after this window instead of refusing the browser until restart.
+const FAILED_VERSION_PROBE_TTL_MS = 60_000;
+
+const executableVersionCache = new Map<
+  string,
+  { exe: StatIdentity; plist: StatIdentity | null; version: string | null; checkedAt: number }
+>();
+
+export function clearExecutableVersionCache(): void {
+  executableVersionCache.clear();
+}
+
+/**
+ * Caches version proof per resolved executable. Any change to the binary's or (macOS) the bundle
+ * Info.plist's dev/ino/size/mtime/ctime invalidates the entry; ctime cannot be restored by utimes.
+ */
+export function getCachedBrowserExecutableVersion(
+  exePath: string,
+  resolver: (path: string) => string | null = getBrowserExecutableVersion,
+  cacheScope = "default",
+): string | null {
+  let real: string;
+  try {
+    real = fs.realpathSync(exePath);
+  } catch {
+    return resolver(exePath);
+  }
+  // A link whose target has another name is a multiplexing launcher such as snap: its identity
+  // says nothing about which app or revision runs, so it is never cached.
+  if (path.basename(real) !== path.basename(exePath)) return resolver(exePath);
+  const plistPath = process.platform === "darwin" ? bundleInfoPlistPath(real) : null;
+  const exe = statIdentity(real);
+  if (!exe) return resolver(exePath);
+  const plist = plistPath ? statIdentity(plistPath) : null;
+  const key = `${cacheScope}\u0000${real}`;
+  const cached = executableVersionCache.get(key);
+  if (
+    cached &&
+    sameIdentity(cached.exe, exe) &&
+    sameIdentity(cached.plist, plist) &&
+    (cached.version !== null || Date.now() - cached.checkedAt < FAILED_VERSION_PROBE_TTL_MS)
+  ) {
+    return cached.version;
+  }
+  const version = resolver(exePath);
+  executableVersionCache.set(key, { exe, plist, version, checkedAt: Date.now() });
+  return version;
+}
+
+function resolveCandidateVersion(
+  candidate: BrowserExecutable,
+  options?: FindExecutableOptions,
+): string | null {
+  if (options?.versionResolver) return options.versionResolver(candidate.path);
+  const allowBundleVersion = allowsBundleVersionProof(candidate.kind);
+  return getCachedBrowserExecutableVersion(
+    candidate.path,
+    (p) => getBrowserExecutableVersion(p, undefined, { allowBundleVersion }),
+    allowBundleVersion ? "bundle" : "cli",
+  );
+}
+
+function findFirstExecutable(
+  candidates: Array<BrowserExecutable>,
+  options?: FindExecutableOptions,
+): BrowserExecutable | null {
+  const minVersion = options?.minVersion ?? MIN_CHROMIUM_SECURITY_VERSION;
+  const enforce = options?.enforceSecurity ?? true;
+
   for (const candidate of candidates) {
-    if (exists(candidate.path)) return candidate;
+    if (!exists(candidate.path)) continue;
+    const version = resolveCandidateVersion(candidate, options);
+    if (version) {
+      if (enforce && !isChromiumVersionAtLeast(version, minVersion)) {
+        continue;
+      }
+      return { ...candidate, version };
+    }
+    if (!enforce || options?.allowInsecureTestOnly) {
+      return candidate;
+    }
   }
 
   return null;
 }
 
-export function findChromeExecutableMac(): BrowserExecutable | null {
+export function findChromeExecutableMac(options?: FindExecutableOptions): BrowserExecutable | null {
   const candidates: Array<BrowserExecutable> = [
     {
       kind: "chrome",
@@ -415,10 +581,17 @@ export function findChromeExecutableMac(): BrowserExecutable | null {
     },
   ];
 
-  return findFirstExecutable(candidates);
+  const opts: FindExecutableOptions = {
+    ...options,
+    enforceSecurity:
+      options?.enforceSecurity ?? (options?.versionResolver ? true : process.platform === "darwin"),
+  };
+  return findFirstExecutable(candidates, opts);
 }
 
-export function findChromeExecutableLinux(): BrowserExecutable | null {
+export function findChromeExecutableLinux(
+  options?: FindExecutableOptions,
+): BrowserExecutable | null {
   const candidates: Array<BrowserExecutable> = [
     { kind: "chrome", path: "/usr/bin/google-chrome" },
     { kind: "chrome", path: "/usr/bin/google-chrome-stable" },
@@ -434,10 +607,15 @@ export function findChromeExecutableLinux(): BrowserExecutable | null {
     { kind: "chromium", path: "/snap/bin/chromium" },
   ];
 
-  return findFirstExecutable(candidates);
+  const opts: FindExecutableOptions = {
+    ...options,
+    enforceSecurity:
+      options?.enforceSecurity ?? (options?.versionResolver ? true : process.platform === "linux"),
+  };
+  return findFirstExecutable(candidates, opts);
 }
 
-export function findChromeExecutableWindows(): BrowserExecutable | null {
+function windowsBrowserCandidates(): Array<BrowserExecutable> {
   const localAppData = process.env.LOCALAPPDATA ?? "";
   const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
   // Must use bracket notation: variable name contains parentheses
@@ -505,25 +683,72 @@ export function findChromeExecutableWindows(): BrowserExecutable | null {
     path: joinWin(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
   });
 
-  return findFirstExecutable(candidates);
+  return candidates;
+}
+
+export function findChromeExecutableWindows(
+  options?: FindExecutableOptions,
+): BrowserExecutable | null {
+  const opts: FindExecutableOptions = {
+    ...options,
+    enforceSecurity:
+      options?.enforceSecurity ?? (options?.versionResolver ? true : process.platform === "win32"),
+  };
+  return findFirstExecutable(windowsBrowserCandidates(), opts);
 }
 
 export function resolveBrowserExecutableForPlatform(
   resolved: ResolvedBrowserConfig,
-  platform: NodeJS.Platform,
+  platform: NodeJS.Platform = process.platform,
+  options?: FindExecutableOptions,
 ): BrowserExecutable | null {
+  const minVersion = options?.minVersion ?? MIN_CHROMIUM_SECURITY_VERSION;
+  const isHost = platform === process.platform;
+
   if (resolved.executablePath) {
     if (!exists(resolved.executablePath)) {
       throw new Error(`browser.executablePath not found: ${resolved.executablePath}`);
     }
-    return { kind: "custom", path: resolved.executablePath };
+    const version = resolveCandidateVersion(
+      { kind: "custom", path: resolved.executablePath },
+      options,
+    );
+    if (version) {
+      assertBrowserSecurityBaseline(
+        version,
+        `executable at ${resolved.executablePath}`,
+        minVersion,
+      );
+      return { kind: "custom", path: resolved.executablePath, version };
+    }
+    if (options?.allowInsecureTestOnly) {
+      return { kind: "custom", path: resolved.executablePath };
+    }
+    throw new Error(
+      `Unable to verify version of browser executable at "${resolved.executablePath}". Version proof is required for security baseline ${minVersion}.`,
+    );
   }
 
   const detected = detectDefaultChromiumExecutable(platform);
-  if (detected) return detected;
+  if (detected) {
+    const version = resolveCandidateVersion(detected, options);
+    if (version) {
+      if (isChromiumVersionAtLeast(version, minVersion)) {
+        return { ...detected, version };
+      }
+      // Detected default browser is below baseline, fail closed for default
+    } else if (options?.allowInsecureTestOnly) {
+      return detected;
+    }
+  }
 
-  if (platform === "darwin") return findChromeExecutableMac();
-  if (platform === "linux") return findChromeExecutableLinux();
-  if (platform === "win32") return findChromeExecutableWindows();
+  const opts: FindExecutableOptions = {
+    ...options,
+    enforceSecurity: options?.enforceSecurity ?? (isHost ? true : false),
+  };
+
+  if (platform === "darwin") return findChromeExecutableMac(opts);
+  if (platform === "linux") return findChromeExecutableLinux(opts);
+  if (platform === "win32") return findChromeExecutableWindows(opts);
   return null;
 }

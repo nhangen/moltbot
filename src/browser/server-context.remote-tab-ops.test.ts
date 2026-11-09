@@ -65,7 +65,14 @@ describe("browser server-context remote profile tab operations", () => {
       closePageByTargetIdViaPlaywright,
     }));
 
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/json/version")) {
+        return new Response(JSON.stringify({ Browser: "Chrome/156.0.8078.80" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       throw new Error("unexpected fetch");
     });
     // @ts-expect-error test override
@@ -130,7 +137,14 @@ describe("browser server-context remote profile tab operations", () => {
       }),
     }));
 
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/json/version")) {
+        return new Response(JSON.stringify({ Browser: "Chrome/156.0.8078.80" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       throw new Error("unexpected fetch");
     });
     // @ts-expect-error test override
@@ -159,7 +173,14 @@ describe("browser server-context remote profile tab operations", () => {
       focusPageByTargetIdViaPlaywright,
     }));
 
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/json/version")) {
+        return new Response(JSON.stringify({ Browser: "Chrome/156.0.8078.80" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       throw new Error("unexpected fetch");
     });
     // @ts-expect-error test override
@@ -187,7 +208,14 @@ describe("browser server-context remote profile tab operations", () => {
       }),
     }));
 
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/json/version")) {
+        return new Response(JSON.stringify({ Browser: "Chrome/156.0.8078.80" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       throw new Error("unexpected fetch");
     });
     // @ts-expect-error test override
@@ -212,6 +240,12 @@ describe("browser server-context remote profile tab operations", () => {
 
     const fetchMock = vi.fn(async (url: unknown) => {
       const u = String(url);
+      if (u.includes("/json/version")) {
+        return {
+          ok: true,
+          json: async () => ({ Browser: "Chrome/156.0.8078.80" }),
+        } as unknown as Response;
+      }
       if (!u.includes("/json/list")) throw new Error(`unexpected fetch: ${u}`);
       return {
         ok: true,
@@ -236,12 +270,15 @@ describe("browser server-context remote profile tab operations", () => {
 
     const tabs = await remote.listTabs();
     expect(tabs.map((t) => t.targetId)).toEqual(["T1"]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.map(([u]) => new URL(String(u)).pathname)).toEqual([
+      "/chrome/json/version",
+      "/chrome/json/list",
+    ]);
   });
 });
 
 describe("browser server-context tab selection state", () => {
-  it("updates lastTargetId when openTab is created via CDP", async () => {
+  async function openCreatedTab(browser: string) {
     vi.resetModules();
     vi.doUnmock("./pw-ai.js");
     vi.doMock("./cdp.js", async () => {
@@ -254,6 +291,9 @@ describe("browser server-context tab selection state", () => {
 
     const fetchMock = vi.fn(async (url: unknown) => {
       const u = String(url);
+      if (u.includes("/json/version")) {
+        return { ok: true, json: async () => ({ Browser: browser }) } as unknown as Response;
+      }
       if (!u.includes("/json/list")) throw new Error(`unexpected fetch: ${u}`);
       return {
         ok: true,
@@ -271,13 +311,24 @@ describe("browser server-context tab selection state", () => {
     // @ts-expect-error test override
     global.fetch = fetchMock;
 
+    const { clearCdpSecurityCache } = await import("./chrome.security.js");
+    clearCdpSecurityCache();
     const { createBrowserRouteContext } = await import("./server-context.js");
     const state = makeState("clawd");
     const ctx = createBrowserRouteContext({ getState: () => state });
-    const clawd = ctx.forProfile("clawd");
+    return { state, opened: ctx.forProfile("clawd").openTab("https://created.example") };
+  }
 
-    const opened = await clawd.openTab("https://created.example");
-    expect(opened.targetId).toBe("CREATED");
+  it("updates lastTargetId when openTab is created via CDP", async () => {
+    const { state, opened } = await openCreatedTab("Chrome/156.0.8078.80");
+    const tab = await opened;
+    expect(tab.targetId).toBe("CREATED");
+    expect(tab.title).toBe("New Tab");
     expect(state.profiles.get("clawd")?.lastTargetId).toBe("CREATED");
+  });
+
+  it("propagates a security refusal from the post-create tab poll", async () => {
+    const { opened } = await openCreatedTab("Chrome/145.0.7632.6");
+    await expect(opened).rejects.toThrowError(/below minimum security baseline/);
   });
 });

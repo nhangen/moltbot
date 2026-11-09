@@ -1,27 +1,80 @@
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Pinned official Google Chrome for Testing (Stable 156.0.8078.80 / rev 1706539)
+# Advisory: https://chromereleases.googleblog.com/2026/10/stable-channel-update-for-desktop_0562499947.html
+# Patched release per Google Chrome desktop advisory (156.0.8078.73/.74+ for Chrome CNA records 118306, 118331, 118348, 118344)
+ARG CFT_VERSION=156.0.8078.80
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
-    chromium \
     curl \
     fonts-liberation \
     fonts-noto-color-emoji \
     git \
     jq \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcairo2 \
+    libcups2 \
+    libdrm2 \
+    libgbm1 \
+    libglu1-mesa \
+    libnss3 \
+    libpango-1.0-0 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libxshmfence1 \
     novnc \
     python3 \
     socat \
+    unzip \
     websockify \
     x11vnc \
     xvfb \
   && rm -rf /var/lib/apt/lists/*
 
+# Install official pinned Chrome for Testing with integrity check.
+# Note: Google does not publish GPG signatures or official checksum files for CfT zips.
+# Below digests are locally computed trust-on-first-use (TOFU) SHA-256 checksums of official artifacts.
+RUN set -eux; \
+    ARCH="$(dpkg --print-architecture)"; \
+    case "${ARCH}" in \
+      amd64) \
+        CFT_PLATFORM="linux64"; \
+        CFT_SHA256="b711c720f774be355197f32edf37e0651418ba036d92446ee2da19ac017540a7" ;; \
+      arm64) \
+        CFT_PLATFORM="linux-arm64"; \
+        CFT_SHA256="1f496a826c9ba4d6a5f5bf2de686145fe718528c2cc3dbeb96b5893b89653724" ;; \
+      *) echo "Unsupported architecture for CfT: ${ARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${CFT_VERSION}/${CFT_PLATFORM}/chrome-${CFT_PLATFORM}.zip" -o /tmp/chrome.zip; \
+    echo "${CFT_SHA256}  /tmp/chrome.zip" | sha256sum -c -; \
+    unzip -q /tmp/chrome.zip -d /opt; \
+    rm /tmp/chrome.zip; \
+    ln -s "/opt/chrome-${CFT_PLATFORM}/chrome" /usr/local/bin/chromium; \
+    ln -s "/opt/chrome-${CFT_PLATFORM}/chrome" /usr/local/bin/google-chrome; \
+    chmod -R 755 "/opt/chrome-${CFT_PLATFORM}"; \
+    test "$(/usr/local/bin/chromium --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)" = "${CFT_VERSION}"
+
+# Run as non-root user to preserve sandboxing within the container
+RUN useradd -m -u 1000 -s /bin/bash moltbot
+
 COPY scripts/sandbox-browser-entrypoint.sh /usr/local/bin/moltbot-sandbox-browser
 RUN chmod +x /usr/local/bin/moltbot-sandbox-browser
+
+# Checked by the gateway before it creates or reuses a sandbox browser container.
+LABEL moltbot.sandbox-browser.security="sandboxed-v2"
+
+USER moltbot
+# Use /tmp/moltbot-home so container runs cleanly under default readOnlyRoot with tmpfs on /tmp
+ENV HOME=/tmp/moltbot-home
 
 EXPOSE 9222 5900 6080
 

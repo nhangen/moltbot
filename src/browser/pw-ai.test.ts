@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearCdpSecurityCache } from "./chrome.security.js";
 
 vi.mock("playwright-core", () => ({
   chromium: {
@@ -58,10 +59,29 @@ async function importModule() {
   return await import("./pw-ai.js");
 }
 
+beforeEach(() => {
+  clearCdpSecurityCache();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (urlStr.includes("/json/version")) {
+        return new Response(JSON.stringify({ Browser: "Chrome/156.0.8078.80" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("Not found", { status: 404 });
+    }),
+  );
+});
+
 afterEach(async () => {
   const mod = await importModule();
   await mod.closePlaywrightBrowserConnection();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
+  clearCdpSecurityCache();
 });
 
 describe("pw-ai", () => {
