@@ -269,6 +269,26 @@ describe("--version output must name a Chromium product", () => {
 });
 
 describe("executable version cache identity", () => {
+  it("re-probes a failed proof after a minute instead of refusing until restart", () => {
+    setPlatform("linux");
+    const exe = path.join(tmpDir, "chromium");
+    fs.writeFileSync(exe, "binary");
+    const resolver = vi.fn<(p: string) => string | null>().mockReturnValueOnce(null);
+    resolver.mockReturnValue("156.0.8078.80");
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+
+    expect(getCachedBrowserExecutableVersion(exe, resolver)).toBeNull();
+    now.mockReturnValue(1_000_000 + 59_000);
+    expect(getCachedBrowserExecutableVersion(exe, resolver)).toBeNull();
+    expect(resolver).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(1_000_000 + 61_000);
+    expect(getCachedBrowserExecutableVersion(exe, resolver)).toBe("156.0.8078.80");
+    now.mockReturnValue(1_000_000 + 10_000_000);
+    expect(getCachedBrowserExecutableVersion(exe, resolver)).toBe("156.0.8078.80");
+    expect(resolver).toHaveBeenCalledTimes(2);
+  });
+
   it("invalidates on a same-size content swap with restored mtime (ctime changes)", () => {
     setPlatform("linux");
     const exe = path.join(tmpDir, "chromium");

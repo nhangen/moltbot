@@ -443,9 +443,13 @@ export function allowsBundleVersionProof(kind: BrowserExecutable["kind"]): boole
   return BUNDLE_VERSION_KINDS.has(kind);
 }
 
+// A failed probe can be a cold-start timeout (snap often exceeds the probe limit), so it is
+// retried after this window instead of refusing the browser until restart.
+const FAILED_VERSION_PROBE_TTL_MS = 60_000;
+
 const executableVersionCache = new Map<
   string,
-  { exe: StatIdentity; plist: StatIdentity | null; version: string | null }
+  { exe: StatIdentity; plist: StatIdentity | null; version: string | null; checkedAt: number }
 >();
 
 export function clearExecutableVersionCache(): void {
@@ -476,11 +480,16 @@ export function getCachedBrowserExecutableVersion(
   const plist = plistPath ? statIdentity(plistPath) : null;
   const key = `${cacheScope}\u0000${real}`;
   const cached = executableVersionCache.get(key);
-  if (cached && sameIdentity(cached.exe, exe) && sameIdentity(cached.plist, plist)) {
+  if (
+    cached &&
+    sameIdentity(cached.exe, exe) &&
+    sameIdentity(cached.plist, plist) &&
+    (cached.version !== null || Date.now() - cached.checkedAt < FAILED_VERSION_PROBE_TTL_MS)
+  ) {
     return cached.version;
   }
   const version = resolver(exePath);
-  executableVersionCache.set(key, { exe, plist, version });
+  executableVersionCache.set(key, { exe, plist, version, checkedAt: Date.now() });
   return version;
 }
 
