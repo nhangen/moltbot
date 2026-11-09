@@ -32,7 +32,7 @@ export type BrowserConfig = {
   noSandbox?: boolean;
   /** If true: never launch; only attach to an existing browser. Default: false */
   attachOnly?: boolean;
-  /** Default profile to use when profile param is omitted. Default: "chrome" */
+  /** Default profile to use when profile param is omitted. Default: "clawd" */
   defaultProfile?: string;
   /** Named browser profiles with explicit CDP ports or URLs. */
   profiles?: Record<string, BrowserProfileConfig>;
