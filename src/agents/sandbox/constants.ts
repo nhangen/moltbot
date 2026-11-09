@@ -39,7 +39,7 @@ export const DEFAULT_TOOL_DENY = [
 
 export const DEFAULT_SANDBOX_BROWSER_IMAGE = "moltbot-sandbox-browser:bookworm-slim";
 export const SANDBOX_BROWSER_SECURITY_LABEL = "moltbot.sandbox-browser.security";
-export const SANDBOX_BROWSER_SECURITY_LABEL_VALUE = "sandboxed-v1";
+export const SANDBOX_BROWSER_SECURITY_LABEL_VALUE = "sandboxed-v2";
 export const DEFAULT_SANDBOX_COMMON_IMAGE = "moltbot-sandbox-common:bookworm-slim";
 
 export const DEFAULT_SANDBOX_BROWSER_PREFIX = "moltbot-sbx-browser-";

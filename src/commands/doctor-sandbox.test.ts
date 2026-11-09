@@ -43,12 +43,12 @@ describe("maybeRepairSandboxImages browser security label", () => {
   it("flags a browser image built before the sandboxed entrypoint", async () => {
     browserLabel.value = "";
     await maybeRepairSandboxImages(cfg, runtime, prompter);
-    expect(notes()).toContain("moltbot.sandbox-browser.security=sandboxed-v1");
+    expect(notes()).toContain("moltbot.sandbox-browser.security=sandboxed-v2");
     expect(notes()).toContain("scripts/sandbox-browser-setup.sh");
   });
 
   it("stays quiet when the browser image carries the current label", async () => {
-    browserLabel.value = "sandboxed-v1";
+    browserLabel.value = "sandboxed-v2";
     await maybeRepairSandboxImages(cfg, runtime, prompter);
     expect(notes()).not.toContain("sandbox-browser.security");
   });

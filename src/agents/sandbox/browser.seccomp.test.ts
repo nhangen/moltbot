@@ -20,6 +20,7 @@ type SeccompRule = {
   names: string[];
   action: string;
   args?: unknown[];
+  comment?: string;
   includes?: { caps?: string[] };
   excludes?: { caps?: string[] };
 };
@@ -93,7 +94,33 @@ describe("sandbox browser seccomp profile", () => {
         ["chroot", "clone", "clone3", "unshare", "setns", "mount", "pivot_root"].includes(name),
       ),
     );
-    expect(widened.map((rule) => [...rule.names].sort())).toEqual([["chroot", "clone", "unshare"]]);
+    expect(widened.map((rule) => rule.names)).toEqual([["chroot"]]);
+
+    const CLONE_NEWNS = 0x00020000;
+    const CLONE_NEWCGROUP = 0x02000000;
+    const CLONE_NEWUTS = 0x04000000;
+    const CLONE_NEWIPC = 0x08000000;
+    const namespaceRules = profile.syscalls.filter(
+      (rule) =>
+        rule.comment?.startsWith("Chromium namespace sandbox: allow only") &&
+        rule.names.some((name) => name === "clone" || name === "unshare"),
+    );
+    expect(namespaceRules.flatMap((rule) => rule.names).sort()).toEqual([
+      "clone",
+      "clone",
+      "unshare",
+      "unshare",
+    ]);
+    for (const rule of namespaceRules) {
+      expect(rule.args).toEqual([
+        {
+          index: expect.any(Number),
+          value: CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC,
+          valueTwo: 0,
+          op: "SCMP_CMP_MASKED_EQ",
+        },
+      ]);
+    }
     expect(
       profile.syscalls.find((rule) => rule.names.length === 1 && rule.names[0] === "clone3")
         ?.action,

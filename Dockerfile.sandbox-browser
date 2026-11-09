@@ -70,7 +70,7 @@ COPY scripts/sandbox-browser-entrypoint.sh /usr/local/bin/moltbot-sandbox-browse
 RUN chmod +x /usr/local/bin/moltbot-sandbox-browser
 
 # Checked by the gateway before it creates or reuses a sandbox browser container.
-LABEL moltbot.sandbox-browser.security="sandboxed-v1"
+LABEL moltbot.sandbox-browser.security="sandboxed-v2"
 
 USER moltbot
 # Use /tmp/moltbot-home so container runs cleanly under default readOnlyRoot with tmpfs on /tmp
