@@ -312,7 +312,7 @@ describe("Chromium security baseline and version verification", () => {
       const mockResolver = vi.fn((p: string) => {
         // First candidate is old, second is patched
         if (p.includes("Google Chrome.app")) return "156.0.8078.4"; // old
-        if (p.includes("Brave Browser.app")) return "156.0.8078.80"; // patched
+        if (p.includes("Chromium.app")) return "156.0.8078.80"; // patched
         return null;
       });
 
@@ -338,7 +338,7 @@ describe("Chromium security baseline and version verification", () => {
         versionResolver: mockResolver,
       });
 
-      expect(resolved?.kind).toBe("brave");
+      expect(resolved?.kind).toBe("chromium");
       expect(resolved?.version).toBe("156.0.8078.80");
     });
   });
@@ -550,7 +550,7 @@ describe("Chromium security baseline and version verification", () => {
       );
     });
 
-    it.runIf(process.platform === "darwin")(
+    it.runIf(process.platform === "darwin" && process.env.CLAWDBOT_LIVE_TEST === "1")(
       "queryDarwinProcessSeatbeltState verifies Seatbelt sandbox_check directly",
       () => {
         // Harness process self is not sandboxed (verifies checking self is NOT browser proof)

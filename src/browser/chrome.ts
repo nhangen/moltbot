@@ -193,7 +193,7 @@ export async function launchClawdChrome(
   const exe = resolveBrowserExecutable(resolved);
   if (!exe) {
     throw new Error(
-      `No supported secure browser found meeting security baseline ${MIN_CHROMIUM_SECURITY_VERSION} (Chrome/Brave/Edge/Chromium on macOS, Linux, or Windows).`,
+      `No supported secure browser found meeting security baseline ${MIN_CHROMIUM_SECURITY_VERSION} (Google Chrome or Chromium on macOS, Linux, or Windows; Brave and Edge cannot prove their Chromium version and are refused).`,
     );
   }
   if (exe.version) {

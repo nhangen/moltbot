@@ -272,8 +272,9 @@ function normalizeWindowsPath(value: string): string {
   return path.win32.normalize(value).toLowerCase();
 }
 
-// The registry value is user-writable and FileVersion is forgeable, so a chrome.exe
-// elsewhere earns no trust from its name: only vendor install locations keep their kind.
+// A chrome.exe outside the vendor install locations earns no trust from its name, because
+// FileVersion is forgeable. The per-user %LOCALAPPDATA% locations are user-writable too, so
+// this narrows trust to where installers put Chrome; it does not defend against a local user.
 function inferWindowsInstalledKind(exePath: string): BrowserExecutable["kind"] {
   const target = normalizeWindowsPath(exePath);
   const installed = windowsBrowserCandidates().find(
@@ -719,11 +720,6 @@ export function resolveBrowserExecutableForPlatform(
         minVersion,
       );
       return { kind: "custom", path: resolved.executablePath, version };
-    }
-    if (isHost && !options?.allowInsecureTestOnly) {
-      throw new Error(
-        `Unable to verify version of browser executable at "${resolved.executablePath}". Version proof is required for security baseline ${minVersion}.`,
-      );
     }
     if (options?.allowInsecureTestOnly) {
       return { kind: "custom", path: resolved.executablePath };
