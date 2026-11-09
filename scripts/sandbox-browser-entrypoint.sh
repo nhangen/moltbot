@@ -72,7 +72,8 @@ chromium "${CHROME_ARGS[@]}" about:blank &
 CHROMIUM_PID=$!
 
 CDP_READY=0
-for _ in $(seq 1 100); do
+CDP_DEADLINE=$((SECONDS + 30))
+while (( SECONDS < CDP_DEADLINE )); do
   if curl -s --max-time 1 "http://127.0.0.1:${CHROME_CDP_PORT}/json/version" >/dev/null 2>&1; then
     CDP_READY=1
     break
@@ -84,7 +85,7 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 if [[ "${CDP_READY}" != "1" ]]; then
-  echo "ERROR: Chromium did not expose CDP on port ${CHROME_CDP_PORT} within 10 seconds." >&2
+  echo "ERROR: Chromium did not expose CDP on port ${CHROME_CDP_PORT} within 30 seconds." >&2
   exit 1
 fi
 
