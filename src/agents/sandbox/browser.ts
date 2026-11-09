@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { startBrowserBridgeServer, stopBrowserBridgeServer } from "../../browser/bridge-server.js";
 import { type ResolvedBrowserConfig, resolveProfile } from "../../browser/config.js";
 import {
@@ -71,6 +75,20 @@ function buildSandboxBrowserResolvedConfig(params: {
   };
 }
 
+// Docker's default profile denies the user-namespace clone/unshare and chroot calls that
+// Chromium's namespace sandbox needs under --cap-drop ALL, so Chromium aborts with
+// "No usable sandbox". The bundled profile is that default plus those three syscalls.
+export function resolveSandboxBrowserSeccompProfile(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const profile = path.resolve(here, "../../../assets/sandbox-browser-seccomp.json");
+  if (!fs.existsSync(profile)) {
+    throw new Error(
+      `Sandbox browser seccomp profile not found at ${profile}; the Chromium sandbox cannot start without it.`,
+    );
+  }
+  return profile;
+}
+
 const SECURITY_LABEL_FORMAT = `{{ index .Config.Labels "${SANDBOX_BROWSER_SECURITY_LABEL}" }}`;
 
 async function readSecurityLabel(inspectArgs: string[]): Promise<string | null> {
@@ -121,7 +139,10 @@ export async function ensureSandboxBrowser(params: {
     await ensureSandboxBrowserImage(params.cfg.browser.image ?? DEFAULT_SANDBOX_BROWSER_IMAGE);
     const args = buildSandboxCreateArgs({
       name: containerName,
-      cfg: params.cfg.docker,
+      cfg: {
+        ...params.cfg.docker,
+        seccompProfile: params.cfg.docker.seccompProfile ?? resolveSandboxBrowserSeccompProfile(),
+      },
       scopeKey: params.scopeKey,
       labels: { "moltbot.sandboxBrowser": "1" },
     });

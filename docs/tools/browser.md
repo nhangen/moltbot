@@ -195,6 +195,7 @@ Chromium security baseline:
 - Only Google Chrome, Chromium, and Chrome Canary builds get bundle (`Info.plist`/FileVersion) version proof. `--version` output must name Chrome or Chromium; a bare version number is refused. Opera, Vivaldi, Yandex, Arc, and unrecognized browsers never get executable version proof, so Moltbot won't launch them; attaching to one over CDP still works when its `/json/version` reports Chromium 156.0.8078.73 or newer.
 - Moltbot has no `--no-sandbox` option. When `browser.noSandbox` is `true`, Moltbot refuses to launch or attach to a browser. The sandbox browser image refuses to start when `CLAWDBOT_BROWSER_NO_SANDBOX` is set to anything other than `0`.
 - Moltbot can't verify that a browser's sandbox is active, whether Moltbot launched it or you started it. Start any browser you attach to over CDP without `--no-sandbox`.
+- The sandbox browser container runs with all capabilities dropped and `no-new-privileges`. Chromium can start its namespace sandbox there because Moltbot applies a bundled seccomp profile: Docker's default profile plus `clone`, `unshare` and `chroot`. A `sandbox.docker.seccompProfile` you set replaces the bundled profile and must allow those calls, or Chromium exits with "No usable sandbox".
 - Sandbox browser images must carry the `moltbot.sandbox-browser.security=sandboxed-v1` label. Rebuild older images with `scripts/sandbox-browser-setup.sh` and remove containers created from them.
 
 Remote CDP tips:

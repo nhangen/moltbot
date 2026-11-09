@@ -77,6 +77,7 @@ Status: beta.
 - **BREAKING:** Sandbox: browser images without the `moltbot.sandbox-browser.security=sandboxed-v1` label, and containers created from them, are refused. Rebuild with `scripts/sandbox-browser-setup.sh` and remove old `moltbot-sbx-browser-*` containers.
 
 ### Fixes
+- Sandbox: the browser image now installs the libraries Chrome for Testing needs, and the browser container applies a bundled seccomp profile so Chromium can start its sandbox with all capabilities dropped. The entrypoint exits when Chromium dies before exposing CDP, instead of hanging.
 - Browser: Windows default-browser detection now works, and trusts only Chrome, Chromium, and Chrome Canary at their standard install locations.
 - Discord: restore username directory lookup in target resolution. (#3131) Thanks @bonald.
 - Agents: align MiniMax base URL test expectation with default provider config. (#3131) Thanks @bonald.
