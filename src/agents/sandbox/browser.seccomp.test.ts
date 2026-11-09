@@ -111,11 +111,14 @@ describe("sandbox browser seccomp profile", () => {
       "unshare",
       "unshare",
     ]);
+    const CLONE_NEWTIME = 0x00000080;
+    const forbidden = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC;
     for (const rule of namespaceRules) {
+      expect(rule.names).toHaveLength(1);
       expect(rule.args).toEqual([
         {
           index: expect.any(Number),
-          value: CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC,
+          value: rule.names[0] === "unshare" ? forbidden | CLONE_NEWTIME : forbidden,
           valueTwo: 0,
           op: "SCMP_CMP_MASKED_EQ",
         },

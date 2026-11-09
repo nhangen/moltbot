@@ -1026,7 +1026,7 @@
       "comment": "Chromium namespace sandbox: chroot inside its own user namespace (the kernel still requires CAP_SYS_CHROOT there)"
     },
     {
-      "names": ["clone", "unshare"],
+      "names": ["clone"],
       "action": "SCMP_ACT_ALLOW",
       "args": [
         {
@@ -1037,6 +1037,23 @@
         }
       ],
       "comment": "Chromium namespace sandbox: allow only CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET without CAP_SYS_ADMIN",
+      "excludes": {
+        "caps": ["CAP_SYS_ADMIN"],
+        "arches": ["s390", "s390x"]
+      }
+    },
+    {
+      "names": ["unshare"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "value": 235012224,
+          "valueTwo": 0,
+          "op": "SCMP_CMP_MASKED_EQ"
+        }
+      ],
+      "comment": "Chromium namespace sandbox: allow only CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET without CAP_SYS_ADMIN (CLONE_NEWTIME is also denied; on clone that bit is part of the exit signal)",
       "excludes": {
         "caps": ["CAP_SYS_ADMIN"],
         "arches": ["s390", "s390x"]
@@ -1067,7 +1084,7 @@
       "args": [
         {
           "index": 0,
-          "value": 235012096,
+          "value": 235012224,
           "valueTwo": 0,
           "op": "SCMP_CMP_MASKED_EQ"
         }
