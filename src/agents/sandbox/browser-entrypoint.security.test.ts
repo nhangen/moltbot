@@ -65,4 +65,18 @@ printf '%s\\n' "$@" > "$ARGS_LOG.tmp" && mv "$ARGS_LOG.tmp" "$ARGS_LOG"`,
     expect(args).toContain("--remote-debugging-address=127.0.0.1");
     expect(args).not.toContain("--no-sandbox");
   });
+  it("exits non-zero instead of serving a dead Chromium when CDP never comes up", () => {
+    writeStub(
+      "chromium",
+      `if [ "$1" = "--version" ]; then echo "Google Chrome for Testing 156.0.8078.80"; exit 0; fi
+echo "FATAL: No usable sandbox!" >&2; exit 134`,
+    );
+    writeStub("curl", "exit 7");
+    const started = Date.now();
+    const result = runEntrypoint({});
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Chromium exited before exposing CDP");
+    expect(Date.now() - started).toBeLessThan(8_000);
+  });
 });

@@ -69,13 +69,24 @@ CHROME_ARGS+=(
 )
 
 chromium "${CHROME_ARGS[@]}" about:blank &
+CHROMIUM_PID=$!
 
-for _ in $(seq 1 50); do
-  if curl -sS --max-time 1 "http://127.0.0.1:${CHROME_CDP_PORT}/json/version" >/dev/null; then
+CDP_READY=0
+for _ in $(seq 1 100); do
+  if curl -s --max-time 1 "http://127.0.0.1:${CHROME_CDP_PORT}/json/version" >/dev/null 2>&1; then
+    CDP_READY=1
     break
+  fi
+  if ! kill -0 "${CHROMIUM_PID}" 2>/dev/null; then
+    echo "ERROR: Chromium exited before exposing CDP. If the log above says 'No usable sandbox', run the container with the bundled seccomp profile (assets/sandbox-browser-seccomp.json); do not disable the sandbox." >&2
+    exit 1
   fi
   sleep 0.1
 done
+if [[ "${CDP_READY}" != "1" ]]; then
+  echo "ERROR: Chromium did not expose CDP on port ${CHROME_CDP_PORT} within 10 seconds." >&2
+  exit 1
+fi
 
 socat \
   TCP-LISTEN:"${CDP_PORT}",fork,reuseaddr,bind=0.0.0.0 \
