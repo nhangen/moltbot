@@ -2774,7 +2774,7 @@ Defaults:
 - CDP URL: `http://127.0.0.1:18792` (control service + 1, legacy single-profile)
 - profile color: `#FF4500` (lobster-orange)
 - Note: the control server is started by the running gateway (Moltbot.app menubar, or `moltbot gateway`).
-- Auto-detect order: default browser if it can prove its Chromium version; otherwise Chrome → Brave → Edge → Chromium → Chrome Canary, skipping any build without version proof.
+- Auto-detect order: default browser if it can prove its Chromium version; otherwise Chrome → Chromium → Chrome Canary, skipping any build without version proof (Brave and Edge are always skipped).
 
 ```json5
 {

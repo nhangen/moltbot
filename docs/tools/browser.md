@@ -8,7 +8,7 @@ read_when:
 
 # Browser (clawd-managed)
 
-Moltbot can run a **dedicated Chrome/Brave/Edge/Chromium profile** that the agent controls.
+Moltbot can run a **dedicated Chrome or Chromium profile** that the agent controls.
 It is isolated from your personal browser and is managed through a small local
 control service inside the Gateway (loopback only).
 
@@ -89,10 +89,10 @@ Notes:
 - `attachOnly: true` means “never launch a local browser; only attach if it is already running.”
 - `color` + per-profile `color` tint the browser UI so you can see which profile is active.
 - The built-in default profile is `clawd` (managed browser). The `chrome` extension relay profile is refused by the Chromium security baseline.
-- Auto-detect order: system default browser if it is Chrome, Chromium, or Chrome Canary with a provable version; otherwise Chrome → Brave → Edge → Chromium → Chrome Canary, skipping any build that cannot prove Chromium 156.0.8078.73 or newer.
+- Auto-detect order: system default browser if it is Chrome, Chromium, or Chrome Canary with a provable version; otherwise Chrome → Chromium → Chrome Canary, skipping any build that cannot prove Chromium 156.0.8078.73 or newer. Brave and Edge are still detected but always skipped, because they can't prove their Chromium version.
 - Local `clawd` profiles auto-assign `cdpPort`/`cdpUrl` — set those only for remote CDP.
 
-## Use Brave (or another Chromium-based browser)
+## Choose a specific browser
 
 Moltbot only uses a browser that proves Chromium 156.0.8078.73 or newer. Set
 `browser.executablePath` to pick a specific binary; its `--version` output must
@@ -191,7 +191,7 @@ Key ideas:
 - Treat remote CDP URLs/tokens as secrets; prefer env vars or a secrets manager.
 
 Chromium security baseline:
-- Every CDP endpoint (managed, attached, remote, or sandboxed) must report Chromium 156.0.8078.73 or newer in `/json/version`. Older, unparseable, or missing versions are refused before Moltbot launches, attaches, opens, lists, focuses, or closes tabs.
+- Every CDP endpoint (managed, attached, remote, or sandboxed) must report Chromium 156.0.8078.73 or newer in `/json/version`. Older, unparseable, or missing versions are refused before Moltbot attaches, opens, lists, focuses, or closes tabs. For a browser Moltbot launches, the executable's version is checked before launch and the CDP version right after launch, before any tab is used.
 - Only Google Chrome, Chromium, and Chrome Canary builds get bundle (`Info.plist`/FileVersion) version proof. `--version` output must name Chrome or Chromium; a bare version number is refused. Opera, Vivaldi, Yandex, Arc, and unrecognized browsers never get executable version proof, so Moltbot won't launch them; attaching to one over CDP still works when its `/json/version` reports Chromium 156.0.8078.73 or newer.
 - Moltbot has no `--no-sandbox` option. When `browser.noSandbox` is `true`, Moltbot refuses to launch or attach to a browser. The sandbox browser image refuses to start when `CLAWDBOT_BROWSER_NO_SANDBOX` is set to anything other than `0`.
 - Moltbot can't verify that a browser's sandbox is active, whether Moltbot launched it or you started it. Start any browser you attach to over CDP without `--no-sandbox`.
@@ -218,6 +218,8 @@ Defaults:
 All control endpoints accept `?profile=<name>`; the CLI uses `--browser-profile`.
 
 ## Chrome extension relay (use your existing Chrome)
+
+The extension relay is currently refused: it can't prove the version of the browser behind it, so the `chrome` profile and any `driver: "extension"` profile fail closed. The default profile is `clawd`. The rest of this section describes the relay for when that proof exists.
 
 Moltbot can also drive **your existing Chrome tabs** (no separate “clawd” Chrome instance) via a local CDP relay + a Chrome extension.
 
@@ -278,12 +280,10 @@ Notes:
 
 When launching locally, Moltbot picks the first available:
 1. Chrome
-2. Brave
-3. Edge
-4. Chromium
-5. Chrome Canary
+2. Chromium
+3. Chrome Canary
 
-Builds that cannot prove Chromium 156.0.8078.73 or newer are skipped. You can override with `browser.executablePath`.
+Brave and Edge are detected but always skipped. Builds that cannot prove Chromium 156.0.8078.73 or newer are skipped. You can override with `browser.executablePath`.
 
 Platforms:
 - macOS: checks `/Applications` and `~/Applications`.
