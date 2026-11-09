@@ -19,12 +19,14 @@ RUN apt-get update \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
+    libcairo2 \
     libcups2 \
     libdrm2 \
     libgbm1 \
     libglu1-mesa \
     libnss3 \
     libpango-1.0-0 \
+    libxkbcommon0 \
     libxcomposite1 \
     libxdamage1 \
     libxrandr2 \
